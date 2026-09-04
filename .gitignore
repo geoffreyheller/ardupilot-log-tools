@@ -1,0 +1,15 @@
+# Parsed-log caches, written beside each .bin
+*.dfcache
+
+# Reference logs are not distributed - point LOG_DIR at them instead
+reference-logs/
+*.bin
+*.tlog
+*.rlog
+
+# pymavlink vendored by tools/bootstrap_pymavlink.sh
+vendor/
+
+__pycache__/
+*.pyc
+.venv/

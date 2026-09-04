@@ -1,0 +1,7 @@
+# Core analysis. Any reasonably recent version works; these are the floors tested against.
+numpy>=1.22
+pandas>=1.4
+scipy>=1.8
+
+# Charts only (plot_notch.py). The CLI works without it.
+matplotlib>=3.5
