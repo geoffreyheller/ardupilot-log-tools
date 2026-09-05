@@ -326,6 +326,15 @@ def test_flight_all_runs_the_battery_once_per_flight():
     assert code_md == code
 
 
+def test_flight_all_on_a_whole_log_check_runs_nothing_per_flight():
+    """`run(log, [])` runs every check - an empty name list is falsy. A whole-log-only
+    selection must not smuggle the entire battery back in, once per flight."""
+    code, doc = run_json("events", TWO_FLIGHTS, "--flight", "all")
+    assert [s["key"] for s in doc["whole_log_sections"]] == ["events"]
+    assert all(f["sections"] == [] for f in doc["per_flight"]), \
+        [s["key"] for s in doc["per_flight"][0]["sections"]]
+
+
 def test_flight_all_is_rejected_where_it_makes_no_sense():
     code, out, err = run("dump", TWO_FLIGHTS, "ESC", "--flight", "all")
     assert code == 3 and "--flight" in err

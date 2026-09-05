@@ -281,10 +281,14 @@ def _cmd_check_all(args, names, log):
         w = _window(log, args, flight=f.index)
         w.scope = "all"
         windows.append(w)
+    # `run(log, [])` would run *every* check - an empty list is falsy there - so both
+    # halves are guarded. `alog events <log> --flight all` selects no windowed check at
+    # all, and must produce no per-flight blocks rather than the whole battery twice.
     whole = [n for n in (names or CHECK_NAMES) if n in WHOLE_LOG_CHECKS]
     per_names = [n for n in (names or CHECK_NAMES) if n not in WHOLE_LOG_CHECKS]
     whole_secs = run(log, whole, window=windows[0], normalise=not args.raw_factors) if whole else []
-    per = [(w, run(log, per_names, window=w, normalise=not args.raw_factors)) for w in windows]
+    per = [(w, run(log, per_names, window=w, normalise=not args.raw_factors) if per_names else [])
+           for w in windows]
     every = whole_secs + [s for w, ss in per for s in _labelled(ss, w.index)]
     code = _exit_code(every)
     if args.json:
