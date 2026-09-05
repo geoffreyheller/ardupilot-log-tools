@@ -45,6 +45,18 @@ same log once produced 4.7 % and 6.31 % for the same measurement — whole-log v
 airborne-only. Not a contradiction, but it cost a paragraph of explanation that one line of
 method would have prevented.
 
+**A log can hold more than one flight, and a window that spans two is not a window.** On
+a two-flight log (`2026-09-04 16-39-48.bin`: 64.5-255.9 s and 285.3-360.4 s, 30 s of
+ground time between them) `alog all --window rpm` reported `notch 0 tracking` **FAIL**,
+p95 error 1.234 of the fundamental, and `notch 0 harmonic lock-on` **FAIL**, 6.9 % of the
+window above 1.5x. Both were pure artefacts of the ground time inside the window, where
+`FCNS.CF` is NaN or clamped and there is no fundamental to track: `check_notch`
+interpolates the fundamental across the gap and divides by it. Windowed per flight the
+same two checks are **PASS**, 0.010 and 0 % - on *both* flights. The integrity block was
+clean throughout. Fixed 2026-09-04 (issue #1): `--window rpm|throttle` no longer spans the
+gap, `ev|arm` no longer silently analyse only the first flight, and a multi-flight log is
+a WARN. Read the `flights in log` line, and use `--flight all` when you want everything.
+
 **Use the same window method on both sides of a comparison.** `--window rpm` is the most
 reproducible for motor and notch work because it is defined identically regardless of what
 the FC's land detector believed.
@@ -234,6 +246,21 @@ counts.** A 350,000 reading is normal. Internal errors are `PM.ErC` (count), `PM
 scaling applied; `UNIT '-'` (empty label) is dropped by the exporter; `MODE.Mode` is a
 string; `ISBD` arrays do not round-trip; per-instance ESC telemetry may be decimated. The
 reader flags all of this as `TEXT_LOG`. Prefer the `.bin`.
+
+**`airborne_window` used to know nothing about second flights** — three separate ad-hoc
+constructions of "the airborne part", two that spanned the ground time between flights and
+two that silently dropped every flight after the first. Corrected 2026-09-04; see the
+worked example under "Windows and comparisons" above. Any analysis written before that
+date against a multi-flight log should be re-run: its window, and therefore every number
+in it, may have covered ground time or a single flight without saying so.
+
+**`--window rpm` is only as good as its 90 Hz floor.** On a low-KV / large-prop aircraft
+that cruises below 5400 RPM the fleet-mean fundamental spends most of the flight *under*
+the floor: on `2026-08-06 18-21-35.bin` only 455 of 26,418 ESC samples clear it, in bursts
+separated by 32 s and 55 s of sub-floor flight. The segmenter correctly refuses to call
+that one contiguous flight, so `--window rpm` returns the longest burst (15 s) rather than
+the 300 s min..max span it used to. Use `--window ev` on such an aircraft, and read
+`alog info`'s flight table before trusting an `rpm` window.
 
 **A 25 Hz IMU stream cannot show a 200 Hz motor.** The standard `LOG_BITMASK` logs IMU at
 25 Hz and RATE at 10 Hz. An FFT of either is honest only below 12.5 Hz. `alog fft` says so

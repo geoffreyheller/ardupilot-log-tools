@@ -20,12 +20,27 @@ check list and threshold table. Non-finite floats are `null`. Bytes are Latin-1 
                                  "offsets": [10475991], "detail": { "bytes": 5, "msg_type": "RTC" } } ] }
   },
   "window": { "t0": 77.4, "t1": 277.8, "duration_s": 200.4,
-              "method": "EV NOT_LANDED->LAND_COMPLETE", "note": "" },
+              "method": "EV NOT_LANDED->LAND_COMPLETE", "note": "",
+              "n_flights": 1, "flight_index": 1 },
+  "flights": [ { "index": 1, "t0": 77.4, "t1": 277.8, "duration_s": 200.4,
+                 "source": "EV NOT_LANDED->LAND_COMPLETE" } ],
   "exit_code": 2
 }
 ```
 
-`log` is absent for `schema`; `window` is present only when a window was used.
+`log` is absent for `schema`; `window` and `flights` are present only when a window was
+used.
+
+`flights` is **every flight the log holds**, not just the one analysed. A log can hold
+more than one - take off, land, disarm, re-arm, take off again - and `window` is always
+exactly one of them, never the span across the ground time between two. `window.method`
+then carries a `, flight k of n` suffix, and `window.n_flights` / `window.flight_index`
+say the same thing numerically. The suffix and the two keys are omitted on a
+single-flight log, so those method strings are unchanged from schema `alog/1`.
+
+A log with more than one flight raises a `flights in log` WARN (so `exit_code` is at
+least `1`) unless every flight was analysed. Select one with `--flight N`, or analyse
+them all with `--flight all`.
 
 ## Check reports (`all`, or any single check name)
 
@@ -58,20 +73,50 @@ check list and threshold table. Non-finite floats are `null`. Bytes are Latin-1 
   `integrity` (which has a richer standalone command) and `paramcheck` / `spectrum` (named
   to avoid clashing with the `params` and `fft` commands).
 
+### `--flight all`: `per_flight` instead of `sections`
+
+Under `--flight all` the battery runs once per flight, and the document has **no
+top-level `sections`**. Key off the presence of `per_flight`; the two shapes are mutually
+exclusive.
+
+```json
+"whole_log_sections": [ ...integrity, events, brownout: the checks that use no window... ],
+"per_flight": [
+  { "index": 1,
+    "window": { "t0": 64.1, "t1": 254.9, "method": "ESC fundamental > 90 Hz, flight 1 of 2",
+                "n_flights": 2, "flight_index": 1, "...": "..." },
+    "sections": [ ... ], "verdict": { ... }, "exit_code": 2 },
+  { "index": 2, "window": { "...": "..." }, "sections": [ ... ], "verdict": { ... },
+    "exit_code": 1 }
+],
+"verdict": { "counts": { ... }, "findings": [ ...names prefixed "flight k: ..." ... ] },
+"exit_code": 2
+```
+
+The top-level `window` is the first flight's, for callers that expect one to be there;
+read `per_flight[k].window` for the window each set of numbers was taken over. The
+top-level `verdict` is combined across every flight and its finding names carry the flight
+they came from, because two bare `motor balance` WARNs with no flight attached would be
+exactly the ambiguity this key exists to remove. `exit_code` is the worst across all
+flights.
+
+`--flight all` is rejected (exit 3) on `dump`, `fft` and `compare`: one CSV, one transform
+or one comparison table of two disjoint flights is not a thing.
+
 ## Other commands
 
 | command | payload keys |
 |---|---|
-| `info` | `info` (identity: firmware, vehicle, board, sha256, UTC start from GPS time, durations, counts), `quality` (data-quality Diagnostics), `coverage` (a section) |
+| `info` | `info` (identity: firmware, vehicle, board, sha256, UTC start from GPS time, durations, counts), `quality` (data-quality Diagnostics), `coverage` (a section), `flights` |
 | `integrity` | `structure`, `quality` (both Diagnostics dicts) |
 | `types` | `present: [{name, count, rate_hz, instances, fields, units}]`, `declared_but_absent: [name]` |
 | `fields MSG` | `message`, `format` (the FMT), `count`, `rate_hz`, `instance_field`, `fields: [{name, type, unit, mult, range}]` |
 | `dump MSG` | `message`, `n`, `rows: [ {field: value} ]` |
 | `params` | `n`, `params: {name: {value, default}}`, `changes: [{t, name, old, new}]`; with `--diff`: `diff_file`, `unparsed_lines`, `differences: [{name, in_log, in_file, note}]` |
-| `compare` | `logs: [{file_name, path, integrity, window}]`, `checks: [{name, per_log: [result or null]}]` |
+| `compare` | `logs: [{file_name, path, integrity, window}]`, `checks: [{name, per_log: [result or null]}]`; `--flight N` applies to every log, `--flight all` is rejected |
 | `fft` | `fft: {source, fs_hz, band_hz, timing, esc_fundamental_hz, peaks: {axis: [{freq_hz, psd, db_above_floor, prominence_db, order}]}, warnings, spectrum (with --spectrum), plot, csv}`; with `--list-sources`: `sources` |
 | `files` | `files: [{name, bytes}]`, `written: [path]` |
-| `schema` | `exit_codes`, `result`, `section`, `integrity`, `window`, `checks`, `window_methods`, `thresholds` |
+| `schema` | `exit_codes`, `result`, `section`, `integrity`, `window`, `flights`, `per_flight`, `checks`, `window_methods`, `thresholds` |
 
 ## Errors
 

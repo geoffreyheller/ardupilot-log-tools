@@ -20,6 +20,12 @@ not break.
   used it. A number that depends on a default is conditional on that default.
 - A window method that could not be applied falls back to the whole log, and the method
   string says `FALLBACK`. An explicit `--window T0:T1` that is impossible is an error.
+- A log holding more than one flight is reported as such. The window is always *one*
+  flight, never the span across the ground time between two, and its method string names
+  which (`, flight k of n`). Analysing one of several is a `WARN`, whether or not the
+  flight was chosen explicitly - a report outlives the command line that produced it, and
+  a reader must not have to know which flags were passed to know that a flight was left
+  out. `--flight all` analyses every one.
 - `--strict` turns any error-level integrity issue into exit code 3: the input is refused.
 - Exit codes are the verdict: `0` pass, `1` warn, `2` fail, `3` the input could not be
   analysed. Nothing else is ever returned. Pipe closures are not failures.
@@ -52,8 +58,9 @@ not break.
 ## 4. Analysis discipline (for the agent reading the log).
 
 - One change per flight. A comparison is only trustworthy when one thing moved.
-- Quote the window and the method. Use `--window rpm` for motor, notch and vibration work
-  and for every before/after comparison.
+- Quote the window and the method - and the flight, on a log that holds more than one.
+  Use `--window rpm` for motor, notch and vibration work and for every before/after
+  comparison.
 - Report what you were not asked about when it is worse than what you were asked about.
 - A recommendation names its validation flight: what to fly and what to measure.
 - Never carry conclusions between aircraft. Read the aircraft's own notes first.
@@ -66,10 +73,11 @@ not break.
 
 ## 5. Changing the tools.
 
-- Run all three test files before and after: `tests/test_toolkit.py` (pinned regression
+- Run all four test files before and after: `tests/test_toolkit.py` (pinned regression
   figures on the reference logs, skipped when `LOG_DIR` is unset),
-  `tests/test_parser_integrity.py` (synthetic malformed logs, every integrity code) and
-  `tests/test_cli.py` (exit codes and JSON contract). A change that makes a pinned figure
+  `tests/test_parser_integrity.py` (synthetic malformed logs, every integrity code),
+  `tests/test_cli.py` (exit codes and JSON contract) and `tests/test_flights.py`
+  (flight segmentation and window selection). A change that makes a pinned figure
   move is wrong until proven otherwise.
 - A new integrity condition gets a code, a severity, a test that triggers it, and a line in
   `reference/integrity-codes.md`.
