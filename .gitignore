@@ -13,3 +13,9 @@ vendor/
 __pycache__/
 *.pyc
 .venv/
+
+# local virtualenvs and build output
+.venv*/
+build/
+dist/
+*.egg-info/

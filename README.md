@@ -1,53 +1,62 @@
 # ardupilot-log-tools
 
-A dependency-light Python toolkit for analysing ArduPilot / ArduCopter dataflash (`.bin`)
-logs, built for repeatable before-and-after flight comparisons rather than one-off
-plotting.
+**An agent-first toolkit for analysing ArduPilot / ArduCopter dataflash (`.bin`) logs.**
 
-It parses the DataFlash format directly — no pymavlink, no compiled extensions — and ships
-a battery of checks whose thresholds all carry a cited source, so a verdict can be argued
-with instead of merely believed.
+The goal of this project is to let an AI agent analyse a flight log *efficiently* and
+*accurately*. Everything follows from that: the parser fails loudly instead of quietly
+patching bad input, every number comes with its window, its threshold and the threshold's
+source, every command has a JSON form with a published schema, and the documentation is
+written for the agent doing the analysis rather than for a person looking at plots.
 
 ```bash
-./alog.py all flight.bin
+python alog.py info flight.bin        # what is this, is it intact, what was logged
+python alog.py all  flight.bin        # the standard battery, markdown
+python alog.py all  flight.bin --json # the same, one JSON document
 ```
 
 ```
-Window: 77.0-239.1 s (162.1 s) via EV NOT_LANDED->LAND_COMPLETE.
+# Log analysis - 2026-09-04 12-17-29.bin
+
+**Log integrity:** 0 error(s), 1 warning(s), 1 info in log integrity.
+- [WARNING] TRUNCATED_TAIL: file ends 15 bytes into a RTC message (5 of 20 bytes present) ...
+
+Window: 77.4-277.8 s (200.4 s) via **EV NOT_LANDED->LAND_COMPLETE**. Quote this method when comparing flights.
 
 ## Motors and standing trim
-[PASS] roll trim: 1.1 us standing trim (warn 10, fail 25)
-[WARN] pitch trim: -22.4 us standing trim (warn 10, fail 25)
-[FAIL] yaw trim: 25.3 us standing trim (warn 10, fail 25)
-[WARN] RPM spread: 7.5% across motors, on medians (warn 3, fail 8)
+[FAIL] roll trim: 34.256 us standing trim (warn 10, fail 25)
+[FAIL] pitch trim: -36.738 us standing trim (warn 10, fail 25)
+[PASS] yaw trim: 0.562 us standing trim (warn 10, fail 25)
 
 | axis     | trim (us) | reads as                                         |
 | -------- | --------: | ------------------------------------------------ |
-| roll     |       1.1 | mean(left) - mean(right)                         |
-| pitch    |     -22.4 | mean(front) - mean(rear); negative = CG aft      |
-| yaw      |      25.3 | mean(CCW) - mean(CW); non-zero = standing torque |
+| roll     |      34.3 | mean(left) - mean(right)                         |
+| pitch    |     -36.7 | mean(front) - mean(rear); negative = CG aft      |
+| yaw      |       0.6 | mean(CCW) - mean(CW); non-zero = standing torque |
+
+Channel -> motor map from SERVOn_FUNCTION: M1=C2, M2=C3, M3=C4, M4=C1.
 ```
+
+Exit code 0 / 1 / 2 is pass / warn / fail; 3 means the input could not be analysed.
 
 ---
 
-## Why this exists
+## Core values
 
-Most ArduPilot log analysis is done by eye in a plotting tool, which is fine for spotting
-a problem and poor for answering "did the change I made last flight actually help?". Three
-things make that question hard, and this toolkit is mostly an attempt to fix them:
-
-**Windows.** Every statistic depends on which slice of the log you took it over, and two
-analyses of the same log can disagree purely because one included the descent. Here the
-window is chosen explicitly, by a named method, and that method is printed at the top of
-every report.
-
-**Thresholds.** "Vibration looks fine" is not a baseline. Every check states the number, the
-threshold it was graded against, and where that threshold came from.
-
-**Provenance.** A `.param` file says what the aircraft was *told*; a log says what it
-actually *did*. The two drift — `MOT_THST_HOVER` is relearned in flight — so the tools
-keep configured and measured values distinct and will diff a log's parameters against a
-snapshot for you.
+1. **Fail loudly.** Nothing wrong with the input is ever silently repaired. Truncation,
+   resync, unknown message types, malformed `FMT` records, NaN fields, logging gaps and
+   duplicated blocks are all recorded with a stable code, a byte offset and a count, printed
+   at the top of every report and carried in every JSON document
+   (`reference/integrity-codes.md`). `--strict` refuses a log with any error-level issue.
+   A check that cannot run is `SKIP`, never a pass.
+2. **State the number, the window and the source.** Every result carries its value, its
+   thresholds and where the thresholds came from (`dflog/checks.py::T`,
+   `reference/thresholds.md`). Every report names the window and the method that chose it.
+3. **Agents first.** `--json` everywhere with one contract (`alog schema`,
+   `reference/json-output.md`); structured tables, not markdown inside JSON; deterministic
+   output; errors that say what *does* exist. `RULES.md` is the short contract; `CLAUDE.md`
+   the operating guide.
+4. **Platform agnostic.** Pure Python 3.9+ on Windows, Linux and macOS; no shell scripts on
+   the critical path; UTF-8 output; CI runs all three.
 
 ---
 
@@ -56,43 +65,76 @@ snapshot for you.
 ```bash
 git clone https://github.com/<you>/ardupilot-log-tools.git
 cd ardupilot-log-tools
+pip install -r requirements.txt          # numpy, pandas, scipy (+ matplotlib for plots)
+python alog.py --help
 ```
 
-Python 3.9+ with numpy, pandas and scipy; matplotlib for the charts. No pymavlink
-required. Nothing to build, nothing to install.
+Or `pip install -e .` for an `alog` console script, or with uv: `uv venv && uv pip install
+-r requirements.txt` then `uv run python alog.py ...`. No pymavlink, nothing to compile.
 
 ---
 
 ## Use
 
 ```bash
-./alog.py all      flight.bin              # the standard battery
-./alog.py types    flight.bin              # what messages this log actually contains
-./alog.py motors   flight.bin --window rpm # one check
-./alog.py compare  before.bin after.bin    # like-for-like, identical code both sides
-./alog.py dump     flight.bin RATE --fields t,RDes,R > rate.csv
-./alog.py params   flight.bin --diff snapshot.param
-./plot_notch.py    flight.bin -o notch.png
+python alog.py info      flight.bin                 # identity, integrity, coverage - run first
+python alog.py integrity flight.bin                 # every structural and data-quality issue
+python alog.py all       flight.bin [--json]        # the standard battery
+python alog.py motors    flight.bin --window rpm    # one check, most reproducible window
+python alog.py fft       flight.bin --plot fft.png  # local FFT (scipy) of the best gyro source
+python alog.py fft       flight.bin --list-sources  # every transformable signal with its Nyquist
+python alog.py compare   before.bin after.bin       # like-for-like, identical code both sides
+python alog.py types     flight.bin                 # messages present, rates, fields
+python alog.py fields    flight.bin ESC             # one message's fields, units, MULT, ranges
+python alog.py dump      flight.bin RATE --fields t,RDes,R --every 10 > rate.csv
+python alog.py params    flight.bin --diff snapshot.param
+python alog.py params    flight.bin --non-default   # what differs from firmware defaults
+python alog.py files     flight.bin --out embedded/ # extract FILE records (hwdef, threads...)
+python alog.py schema                               # the JSON contract, checks, thresholds
+python plot_notch.py     flight.bin -o notch.png    # notch verification chart
 ```
 
-Checks: `summary`, `events`, `vibe`, `motors`, `notch`, `pid`, `gust`, `ekf`, `compass`,
-`power`, `gps`, `cpu`, `batchfft`. Output is markdown; exit code is 0 / 1 / 2 for
-pass / warn / fail, so it drops into a script.
+Checks (`alog all` runs them in this order): `summary`, `integrity`, `coverage`, `events`,
+`flight`, `paramcheck`, `brownout`, `vibe`, `imu`, `motors`, `notch`, `pid`, `gust`, `ekf`,
+`estimates`, `compass`, `power`, `gps`, `cpu`, `spectrum`, `batchfft`. Each is also a
+subcommand.
+
+Windows: `--window auto|ev|rpm|throttle|arm|none` or an explicit `--window 120:180`
+(seconds since boot). `rpm` (fleet-mean ESC fundamental above 90 Hz) is the one to use for
+motor, notch and vibration work and for any before/after comparison.
 
 As a library:
 
 ```python
-from dflog import Log, airborne_window, mix_for, trim_decomposition
+from dflog import Log, airborne_window, mix_for, trim_decomposition, spectral
 
-log  = Log("flight.bin")            # parses once, caches beside the log
+log  = Log("flight.bin")                # parses once, caches beside the log as .dfcache
+log.diagnostics.ok                      # False if anything in the file was wrong
+print(log.diagnostics.render())         # every issue with code, severity, byte offset
 w    = airborne_window(log, method="rpm")
-esc  = log.instances("ESC")         # {0: df, 1: df, 2: df, 3: df}
-rate = w.clip(log.df("RATE"))       # pandas DataFrame, airborne only
+esc  = log.instances("ESC")             # {0: df, 1: df, 2: df, 3: df}
+rate = w.clip(log.df("RATE"))           # pandas DataFrame, airborne only
+r    = spectral.analyse(log, window=w)  # Welch PSD + peaks in motor orders, or SpectralError
 ```
 
-`Log.field(msg, "BAlt", "BarAlt")` probes field-name aliases, because ArduPilot renames log
-fields between versions and hardcoding one spelling is the usual way a script breaks on an
-older log.
+---
+
+## What it checks
+
+| check | what it measures | thresholds from |
+|---|---|---|
+| integrity | structural issues from the parse, NaN/gap/duplicate scan | this parser; LogAnalyzer TestNaN/TestDupeLogData |
+| coverage | which messages exist, at what rate, and the fastest gyro source vs the motor fundamental (Nyquist) | Nyquist |
+| events, flight | EV/ERR/MSG decoded (subsystem names, prearm failures, crash, thrust loss), ever armed/flew, autotune outcome, lean vs ANGLE_MAX, uncommanded mode changes | LogAnalyzer TestEvents/TestAutotune/TestPitchRollCoupling, dronekit-la |
+| paramcheck, brownout | NaN parameters, in-flight parameter changes, learned hover throttle vs snapshot, still armed at log end | LogAnalyzer TestParams/TestBrownout |
+| vibe, imu | VIBE p95 and clip deltas; gyro bias, IMU health flags and counters, dual-IMU accel mismatch | ArduPilot wiki, LogAnalyzer TestIMUMatch |
+| motors | standing-trim decomposition through the SERVOn_FUNCTION channel map, RPM spread on medians, bidirectional DShot error rate, headroom against the MOT_SPIN_MAX ceiling, MOTB throttle limiting | measured, dronekit-la |
+| notch | `FCNS.CF` tracking against `ESC.RPM/60` (the notch as applied, not the FFT's opinion) | measured |
+| pid, gust | desired-vs-actual rate correlation split at 5 Hz, `Dmod` slew-limiter engagement, PID output limiting, attitude error, unrequested excursions per second | dronekit-la, measured |
+| ekf, estimates | XKF4 innovation ratios with the count over 1.0, solution-status flags, resets; ATT vs AHR2/XKF1 and baro vs EKF divergence | dronekit-la |
+| compass, power, gps, cpu | field magnitude/variation/health, motor interference, offset magnitudes; current-vs-throttle correlation, board Vcc; sats, HDOP, fix availability, position jumps, glitch ERRs; load, slow loops, free memory, internal errors | LogAnalyzer, dronekit-la, wiki |
+| spectrum | local Welch PSD (scipy) of the fastest gyro source, peaks labelled in motor orders, honest about Nyquist and timing jitter | wiki FFT_SNR_REF |
+| batchfft | pre/post-filter batch-IMU spectra, order-normalised notch attenuation and placement | pymavlink mavfft_isb method |
 
 ---
 
@@ -111,13 +153,10 @@ pitch trim = mean(front motors) - mean(rear motors)      negative => CG aft
 yaw   trim = mean(CCW motors)   - mean(CW motors)        torque asymmetry
 ```
 
-The case that motivated it: a bent blade tip was straightened by hand. Roll trim went
-+8.3 → +1.6 µs — fixed — while yaw sat unmoved at +22.6 → +25.3 µs. A straightened blade
-recovers its thrust but not its twist and airfoil, so it recovers its lift and not its drag
-torque. "Replace the prop rather than straighten it" is invisible in a spread number and
-obvious in the decomposition.
-
-Works for any frame in `dflog/frames.py`; unknown frames fall back to quad-X and say so.
+`RCOU.C<n>` is servo output n, not motor n. Many 4-in-1 boards ship a non-sequential
+`SERVOn_FUNCTION` map so the connector matches Betaflight order; feeding `C1..C4` straight
+into the mix then reports true roll as yaw and sends you looking for a twisted arm that
+does not exist. The motors check reads the map from the log and prints it.
 
 ### Measure the filter, not the FFT
 
@@ -126,26 +165,13 @@ frequency the harmonic notch actually *applied*. They are the same series only w
 `INS_HNTCH_MODE=4`; once the notch is driven by ESC telemetry they decouple, and only
 `FCNS.CF` answers the question. Ground truth is always `ESC.RPM / 60`.
 
-This is easy to get wrong in a way that produces a confident wrong answer. One analysis
-asked whether the FFT would track better after switching the notch's *source* — but
-changing what consumes the FFT cannot change the FFT's own accuracy. The FFT got worse
-across that change (6.3 % → 17.2 % mistracking, because the second flight was more
-dynamic) while the notch itself went from 6.5 % mistracking to 0.00 %.
-
 ### Order-normalised batch-IMU spectra
 
-For the post-filter proof you need `INS_LOG_BAT_MASK=1` and `INS_LOG_BAT_OPT=4`. Two things
-then go wrong in a naive implementation:
-
-- Batch logging drops samples routinely. Concatenating across an `ISBD.seqno` gap produces
-  peaks that are not real, so any window with a gap is discarded.
-- The notch centre moves with RPM, so averaging raw spectra smears the notch across tens of
-  hertz and the dip disappears. Normalising each batch by the notch centre the FC was
-  tracking *at that instant* puts order 1.0 at the true fundamental every time.
-
-On a verified flight the attenuation minimum landed at order 0.990 and the second at
-2.010 — evidence the notch is applied where the noise actually is, not merely configured to
-be.
+For the post-filter proof you need `INS_LOG_BAT_MASK=1` and `INS_LOG_BAT_OPT=4`. Batch
+logging drops samples routinely, so any window with an `ISBD.seqno` gap is discarded, and
+because the notch centre moves with RPM every batch is normalised by the centre the FC was
+tracking at that instant before averaging. On a verified flight the attenuation minimum
+landed at order 0.990 and the second at 2.010.
 
 ![notch verification](docs/notch-example.png)
 
@@ -154,103 +180,90 @@ be.
 ## Layout
 
 ```
-alog.py                   the CLI
-plot_notch.py             notch verification chart
-CLAUDE.md                 instructions for coding agents working with these logs
+alog.py / plot_notch.py   thin launchers (python alog.py ...)
+RULES.md                  the contract: fail loudly, state the number, agents first
+CLAUDE.md                 the operating guide for an agent analysing a log
+AGENTS.md                 pointer for other agent frameworks
 dflog/
-  parser.py               .bin DataFlash reader + on-disk cache
-  flight.py               window selection, events, modes, hover chunks
-  frames.py               motor-mix geometry and the trim decomposition
-  analysis.py             the check battery
-  checks.py               Result contract + the cited threshold registry
-  stats.py                describe / correlate / band-split / PSD helpers
-  report.py               markdown formatting
+  parser.py               .bin reader + Diagnostics + on-disk cache (fails loudly)
+  textlog.py              .log text-export reader (flagged as second-class)
+  flight.py               window selection, events, modes, mode reasons, hover chunks
+  frames.py               motor-mix geometry, channel map, trim decomposition
+  analysis.py             the check battery (Sections with tables + notes)
+  checks.py               Result contract + the cited threshold registry T
+  spectral.py             scipy-based FFT: sources, Welch PSD, peaks, jitter/Nyquist honesty
+  stats.py / report.py    statistics and markdown helpers
+  cli.py                  the agent-facing CLI (markdown + JSON, exit codes)
 reference/
+  integrity-codes.md      every diagnostic code, severity and meaning
+  json-output.md          the JSON contract
   dataflash-format.md     the binary format, in enough detail to write a parser
   messages.md             message and field reference with units and decodings
   thresholds.md           every threshold and where it came from
   param-decodings.md      device IDs, bitmasks, enums, derived quantities
   pitfalls.md             mistakes made, so they need not be made again
-  existing-tools.md       survey of the ecosystem and what was taken from it
+  existing-tools.md       audit of the open-source ecosystem and what was taken from it
 templates/                report template
-tools/bootstrap_pymavlink.sh
 tests/
+  synthlog.py             a DataFlash writer for building malformed test logs
+  test_parser_integrity.py, test_cli.py   run anywhere, no flight data needed
+  test_toolkit.py         pinned regression figures; needs LOG_DIR
+tools/bootstrap_pymavlink.py (and .sh)   vendor pymavlink when you want mavextra/mavfft_isb
 ```
-
-`reference/` is the part most likely to be useful even if you never run the code.
-`dataflash-format.md` is a from-scratch parser spec; `pitfalls.md` is a list of things that
-have produced wrong answers.
 
 ---
 
 ## The parser
 
 `dflog/parser.py` reads the DataFlash format directly via its self-describing `FMT`
-records. It parses a 6 MB log in about a second with zero resync bytes and caches the
-result beside the log as `<name>.bin.dfcache`, keyed on mtime.
-
-pymavlink's `DFReader` is the reference implementation and would be the obvious dependency,
-but it is awkward to vendor: the repo ships no generated MAVLink dialects, the message
-definitions live in a *different* repo, and `DFReader` imports `mavutil`, which tries to
-generate them at import time and fails. `tools/bootstrap_pymavlink.sh` handles all of that
-if you want `mavextra` (WMM expected earth field, magfit) or `mavfft_isb.py` — nothing here
-requires it.
-
-Two format details that cost people time: the `FMT` body is **86 bytes**, not 89 (the
-three-byte packet header is not part of it), and **`MULT` multipliers are not applied** to
-values — only format-character scaling (`c C e E L`) is. pymavlink, JsDataflashParser and
-ardupilot-binlog all agree on the latter; `FMTU`/`UNIT`/`MULT` are display metadata.
+records: about 1 s for a 16 MB log, cached beside the log as `<name>.bin.dfcache` keyed on
+size, mtime and cache version. It decodes by the format string (all 21 characters including
+`g` float16), applies format-character scaling (`c C e E L`) and never `MULT`, reassembles
+4.7+ chunked `MSG` text and `FILE` records, splits instances by the FMTU `#` marker with a
+label fallback, and derives UTC from GPS week/ms. What it finds wrong it reports; see
+`reference/integrity-codes.md` for the codes and for how pymavlink, ardupilot-binlog and
+JsDataflashParser behave on the same inputs.
 
 ---
 
 ## Tests
 
 ```bash
-python3 tests/test_toolkit.py                  # pure unit tests
-LOG_DIR=/path/to/logs python3 tests/test_toolkit.py   # plus the regression fixtures
+python tests/test_parser_integrity.py        # synthetic malformed logs: every integrity code
+python tests/test_cli.py                     # exit codes and the JSON contract
+python tests/test_toolkit.py                 # pinned regression figures (skips without LOG_DIR)
+LOG_DIR=/path/to/logs python tests/test_toolkit.py
 ```
 
-The toolkit was validated against hand-written analyses of two logs produced before it
-existed, and reproduces them exactly: attitude error sd 0.413° / 0.381°, standing trims
-+8.3 / +12.9 / +22.6 µs, `XKF4.SM` max 1.56 with 6 rejections, RPM spread 7.48 %, notch
-attenuation at order 0.99. Those numbers are pinned as tests. If a refactor changes them,
-the refactor is wrong until proven otherwise.
-
-The reference logs are not distributed with the repo. Tests that need one skip cleanly.
-pytest is optional — `tests/_shim.py` is a 40-line stand-in so the suite runs anywhere.
+The regression suite pins hand-verified numbers from two reference logs: attitude error sd
+0.413° / 0.381°, motor-ordered trims, `XKF4.SM` max 1.56 with 6 rejections, RPM spread
+7.48 %, notch attenuation at order 1.000. If a refactor changes them, the refactor is wrong
+until proven otherwise. pytest is optional; `tests/_shim.py` runs the suites standalone.
 
 ---
 
 ## Scope and limitations
 
-- Written against ArduCopter 4.x logs from multirotors. The parser is vehicle-agnostic;
-  several checks (trim decomposition, notch, motor balance) assume a multirotor.
+- Written against ArduCopter 4.x logs from multirotors. The parser is vehicle-agnostic and
+  mode tables exist for Plane, Rover and Sub; the motor, notch and trim checks assume a
+  multirotor.
 - Frame geometry covers the common quad / hexa / octa / deca layouts. Unknown frames fall
   back to quad-X and label themselves as having done so.
-- Thresholds are a prompt to look, not a verdict. A clean sheet is not the same as a good
-  flight, and a WARN that has been stable for ten flights is less interesting than a PASS
-  that moved 3× since last time.
-- Telemetry logs (`.tlog`) are not supported. Prefer the `.bin` anyway: text exports
-  decimate per-instance ESC telemetry, and a `.tlog` only ever shows the first-enumerated
-  GPS.
+- Thresholds are a prompt to look, not a verdict.
+- Text `.log` exports are read but flagged (`TEXT_LOG`): values are pre-scaled, records may
+  be decimated, batch-IMU arrays do not round-trip. `.tlog` telemetry logs are not supported.
 
 ---
 
 ## Contributing
 
-New checks go in `dflog/analysis.py` as a `check_*(log, window)` returning a `Section`, and
-get a CLI subcommand automatically. New thresholds go in `dflog/checks.py::T` **with a
-source** — please don't hardcode a number in a script. New decodings you had to work out
-belong in `reference/`, so nobody derives them twice.
-
-Run `python3 tests/test_toolkit.py` before opening a PR.
-
----
+Read `RULES.md` §5. New checks go in `dflog/analysis.py` as `check_*(log, window) ->
+Section`, registered in `ALL_CHECKS`; new thresholds in `dflog/checks.py::T` with a source;
+new integrity conditions get a code, a test and a line in `reference/integrity-codes.md`.
+Run all three test files before opening a PR.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
-
-All code here is original; no source was copied from another project. Several methods and
-numeric thresholds were learned from pymavlink, ArduPilot's `Tools/LogAnalyzer` and
-dronekit-la, and [NOTICE.md](NOTICE.md) records that in detail.
+MIT. All code here is original; methods and thresholds learned from pymavlink, ArduPilot's
+`Tools/LogAnalyzer`, dronekit-la and the ArduPilot firmware itself are credited in
+[NOTICE.md](NOTICE.md) and `reference/existing-tools.md`.

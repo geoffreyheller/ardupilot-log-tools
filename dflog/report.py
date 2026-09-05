@@ -16,6 +16,8 @@ def fmt(v, nd=3):
     if isinstance(v, float):
         if math.isnan(v):
             return "-"
+        if v == int(v) and abs(v) < 1e15:
+            return str(int(v))          # bitmasks, counts, byte sizes: never in scientific notation
         if v != 0 and (abs(v) >= 1e5 or abs(v) < 1e-3):
             return f"{v:.3g}"
         return f"{v:.{nd}f}".rstrip("0").rstrip(".") or "0"

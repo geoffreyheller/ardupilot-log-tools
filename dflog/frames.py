@@ -42,7 +42,8 @@ from __future__ import annotations
 
 import numpy as np
 
-__all__ = ["MotorMix", "mix_for", "trim_decomposition", "FRAME_CLASSES", "FRAME_TYPES"]
+__all__ = ["MotorMix", "mix_for", "trim_decomposition", "motor_channels",
+           "FRAME_CLASSES", "FRAME_TYPES"]
 
 FRAME_CLASSES = {
     0: "Undefined", 1: "Quad", 2: "Hexa", 3: "Octa", 4: "OctaQuad", 5: "Y6",
@@ -133,6 +134,42 @@ def mix_for(frame_class=1, frame_type=1, n_motors=None, normalise=True):
     if n_motors and n_motors != len(geo):
         label += f" [log shows {n_motors} motors, geometry has {len(geo)}]"
     return MotorMix(geo, label=label, normalise=normalise)
+
+
+
+def motor_channels(params, n_motors, max_out=16):
+    """RCOU column names in ArduPilot MOTOR order, from `SERVOn_FUNCTION`.
+
+    `RCOU.C<n>` is servo *output* n, not motor n. ArduPilot's motor numbering is
+    geometry (motor 1 is front-right on a quad X); which output drives it is
+    wiring, declared by `SERVOn_FUNCTION` = 32 + motor number (33 = motor 1 ...
+    36 = motor 4, then 37..40 for motors 5-8). Many 4-in-1 AIO boards ship a
+    non-sequential default so the ESC connector matches Betaflight order - e.g.
+    `SERVO1_FUNCTION=36, SERVO2=33, SERVO3=34, SERVO4=35`, where C1 is motor 4.
+
+    Assuming C<n> == motor n on such a board silently permutes the trim
+    decomposition: on a quad X it reports true yaw as roll, true roll as -yaw
+    and true pitch as -pitch, which turns a pure thrust asymmetry into an
+    apparent standing yaw torque. Always go through this.
+
+    Returns None when the parameters carry no motor functions at all, so the
+    caller can fall back to C1..Cn and say it is assuming the identity map.
+    """
+    _MOTOR_FN = {33: 1, 34: 2, 35: 3, 36: 4, 37: 5, 38: 6, 39: 7, 40: 8,
+                 82: 9, 83: 10, 84: 11, 85: 12}
+    chan_for = {}
+    for out in range(1, max_out + 1):
+        fn = params.get(f"SERVO{out}_FUNCTION")
+        if fn is None:
+            continue
+        m = _MOTOR_FN.get(int(fn))
+        if m is not None and m not in chan_for:
+            chan_for[m] = out
+    if not chan_for:
+        return None
+    if not all(m in chan_for for m in range(1, n_motors + 1)):
+        return None
+    return [f"C{chan_for[m]}" for m in range(1, n_motors + 1)]
 
 
 def trim_decomposition(means, mix):

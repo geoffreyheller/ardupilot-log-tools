@@ -182,3 +182,78 @@ work. Distinguish closed-by-decision from closed-by-resolution.
 
 **Finish by listing documentation drift.** A report that leaves a stale line in the
 project's own notes has done half the job.
+
+## `RCOU.C<n>` is a servo output, not a motor number
+
+`RCOU` logs servo outputs 1..14. ArduPilot's motor numbering is *geometry* — on a quad X,
+motor 1 is front-right, motor 2 rear-left, motor 3 front-left, motor 4 rear-right — and
+which output drives which motor is *wiring*, declared by `SERVOn_FUNCTION` (33 = motor 1,
+34 = motor 2, ... 36 = motor 4; 37-40 for motors 5-8). Many 4-in-1 AIO targets ship a
+non-sequential default so the ESC connector matches Betaflight's motor order, e.g.
+
+    SERVO1_FUNCTION=36  SERVO2_FUNCTION=33  SERVO3_FUNCTION=34  SERVO4_FUNCTION=35
+
+so `C1` is motor 4 and the motors run `M1=C2, M2=C3, M3=C4, M4=C1`.
+
+Projecting `C1..C4` straight onto the quad-X mix factors under that map permutes the axes:
+
+| what the naive calculation prints | what it actually is |
+|---|---|
+| roll  | **yaw** |
+| pitch | **−pitch** |
+| yaw   | **−roll** |
+
+A pure thrust asymmetry (roll/pitch) therefore appears as a large standing *yaw* torque,
+which points the investigation at motor-mount rotation and arm twist instead of at CG,
+blade thrust or prop matching. This cost a real investigation several flights.
+
+Use `frames.motor_channels(params, n_motors)`; `check_motors` does, and prints the map it
+used. Verify it independently on any new airframe by correlating each channel's
+collective-removed deviation against `RATE.ROut`, `RATE.POut` and `RATE.YOut`: the two
+channels that rise with `ROut` are the left pair, those that rise with `POut` are the
+front pair, and those that rise with `YOut` are the CCW pair. All three groupings must
+agree with the `SERVOn_FUNCTION` map.
+
+The ESC telemetry instances follow the same output ordering: `ESC[i]` is servo output
+`i+1`, so it needs the same map before per-motor RPM is attributed to a corner.
+
+---
+
+## Added September 2026
+
+**A log opened at arming has no ARMED event.** With `LOG_DISARMED=0` the file is created
+*at* arming, so `EV 10` is frequently written before the file exists. `ARM.ArmState` and the
+throttle are the witnesses; the `flight` check uses them. "Never armed" on a log that
+obviously flew is this, not a fault.
+
+**`PM.I2CI`, `PM.I2CC` and `PM.SPIC` are transaction/interrupt counters, not error
+counts.** A 350,000 reading is normal. Internal errors are `PM.ErC` (count), `PM.InE`
+(mask) and `PM.ErrL` (line). An early version of this toolkit graded `I2CI` as errors.
+
+**The text `.log` export is pre-scaled and lossy.** Values already have the `c/C/e/E/L`
+scaling applied; `UNIT '-'` (empty label) is dropped by the exporter; `MODE.Mode` is a
+string; `ISBD` arrays do not round-trip; per-instance ESC telemetry may be decimated. The
+reader flags all of this as `TEXT_LOG`. Prefer the `.bin`.
+
+**A 25 Hz IMU stream cannot show a 200 Hz motor.** The standard `LOG_BITMASK` logs IMU at
+25 Hz and RATE at 10 Hz. An FFT of either is honest only below 12.5 Hz. `alog fft` says so
+and exits 1; `coverage` grades the fastest gyro source against the motor fundamental.
+
+**Irregularly sampled data must not be transformed.** A Welch PSD of samples with 30 %
+interval jitter produces a plausible spectrum that is wrong. `alog fft` refuses above 5 %
+jitter; resample explicitly and say so if you must.
+
+**Post-filter batch instances are offset by the IMU count.** With `INS_LOG_BAT_OPT=4` a
+one-IMU board logs `ISBH.instance` 0 (pre) and 1 (post). The unit char on `ISBD` is `o`
+(m/s/s) even for gyro batches; use `ISBH.type`.
+
+**FMT fields are not NUL-terminated when full.** Names of exactly 4, formats of exactly 16
+and labels of exactly 64 characters fill the field. Decode to the first NUL *or the field
+end*, never `strlen`.
+
+**Never cache a failed parse.** A `.dfcache` written for a file that parsed to zero messages
+would hide the real error on the next run. The parser writes a cache only after a
+successful parse, and reports `CACHE_REBUILT` when it had to discard one.
+
+**Windows consoles are not UTF-8 by default.** A report containing `µ` or `→` raises
+`UnicodeEncodeError` half-way through unless stdout is reconfigured; `alog` does this.

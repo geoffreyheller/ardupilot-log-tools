@@ -137,3 +137,52 @@ and milliseconds-of-week), or from the `MSG` banner if the GCS wrote one.
   struct on load (`__getstate__` / `__setstate__`).
 - Scan for the header with `bytes.find(b"\xa3\x95", i)` rather than a Python byte loop; it
   is roughly two orders of magnitude faster on a log with any resync at all.
+
+## Facts from the writer (`libraries/AP_Logger`, ArduPilot master, September 2026)
+
+These come from reading the firmware rather than any reader, and they decide how a parser
+should behave when the file is not perfect.
+
+- **Field limits.** Name 4, format 16, labels 64, units 16, multipliers 16 characters —
+  exactly the FMT/FMTU field widths — written with `strncpy_noterm`, so a full field has
+  **no NUL terminator** (`XKF1`'s format `QBccCfffffffccce` is 16 chars; `PM`'s labels are
+  64). Decode to the first NUL or the field end.
+- **Record length ≤ 255 bytes** including the header; `ISBD` (207 bytes) is the largest
+  static message. `FMT.Length` always equals 3 + the size of the format string in a healthy
+  log; the SITL-only `validate_structure` enforces it at build time.
+- **Self-description order.** The first record is always FMT-of-FMT. Every write funnels
+  through `ensure_format_emitted()`, so a type's FMT (immediately followed by its FMTU) is
+  written before its first data record — **FMTs appear anywhere in the file**, not only at
+  the start, and dynamic `Write()` messages get theirs inline. A data record for a type
+  with no preceding FMT therefore means a lost FMT or corruption.
+- **Startup sequence.** FMT for every static structure, then every `PARM`, then `UNIT` ×39,
+  `MULT` ×15, then `FMTU` for every static structure, then the `MSG` banner (firmware,
+  `ChibiOS: <hash>`, board id, `Param space used`, `RC Protocol`, `RCOut:` banner), `VER`,
+  `RTC` (4.7+), mission/rally/fence, then the vehicle's `Frame:` message and `MODE`. Data
+  records from the main thread interleave with all of this.
+- **Message ids.** Only 128 (FMT) is fixed. 0–31 are vehicle-specific (Copter: 0 `CTUN`),
+  common ids start at 32 (`PARM`) and depend on build options, and dynamic messages count
+  **down from 254**. Never hard-code an id.
+- **How a log ends.** File backend: no terminator, no padding; power loss leaves a
+  512-byte-aligned end that is almost never on a record boundary → `TRUNCATED_TAIL`. Block
+  (raw flash) backend: partial final page zero-filled, erased pages `0xFF`; a MAVLink
+  download strips the page headers, so a downloaded block-backend log ends in 0–249 zero
+  bytes → `TRAILING_PADDING`.
+- **Dropped records** are counted in `DSF.Dp`; gaps in a stream are normal under buffer
+  pressure and are not corruption. `coverage` reports the count.
+- **`PARM`** gained `Default` in 4.3; it is NaN when the default is unknown (in-flight
+  re-emission). A parameter re-appears each time it is set: take the **last** value before
+  the time of interest (`log.param_at`).
+- **`MSG`** text is truncated to 64 characters; from 4.7 it is chunked as
+  `TimeUS,Id,Seq,Message` and must be reassembled. GCS statustexts are mirrored but only the
+  first 50-character piece.
+- **`FILE`** (`NIBZ`: FileName, Offset, Length, Data) has **no TimeUS**; chunks can repeat
+  after a write retry; `Data` is binary — reassemble by (name, offset) honouring `Length`.
+- **`ISBH`/`ISBD`.** `INS_LOG_BAT_CNT` is rounded down to a multiple of 32; `ISBD.seqno`
+  runs 0..cnt/32−1 within a batch; value = raw / `mul` (gyro default 938, accel 208 — read
+  it, never assume); post-filter batches use `instance + IMU count`; sampling pauses while a
+  batch drains so batches are internally contiguous but separated by gaps.
+- **`g` (float16)** exists from 4.6; ardupilot-binlog and JsDataflashParser do not support
+  it. **`M`** is `uint8_t`; pymavlink reads it as signed.
+- **Timestamps.** Not every message starts with `TimeUS` (`FMT`, `FILE`, most replay
+  messages); heuristics must be defensive. The RTC message (4.7+) carries the epoch.

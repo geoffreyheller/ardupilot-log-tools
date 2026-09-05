@@ -1,7 +1,7 @@
 # Message and field reference
 
 The messages that matter for copter log analysis, with units and the non-obvious
-interpretations. Run `./alog.py types "<log>"` for the exact fields in a specific log —
+interpretations. Run `python alog.py types "<log>"` (or `alog fields "<log>" MSG` for units and ranges) for the exact fields in a specific log —
 they vary by firmware version and `LOG_BITMASK`.
 
 Field names drift between versions. Use `log.field(msg, "NewName", "OldName")` rather than
@@ -172,7 +172,11 @@ disarm.
 
 | message | fields | notes |
 |---|---|---|
-| `MSG` | `ID Seq Message` | the FC's own commentary: firmware banner, prearm failures, EKF resets |
+| `MSG` | `Id Seq Message` (4.7+; `Message` only before) | the FC's own commentary: firmware banner, prearm failures, EKF resets. From 4.7 long texts are 64-byte chunks reassembled by `(Id, Seq)`; `log.messages_text()` does this. |
+| `FILE` | `FileName Offset Length Data` | embedded files written at arming (`@SYS/threads.txt`, `@ROMFS/hwdef.dat`, `defaults.parm`...). No `TimeUS`; binary `Data`; `alog files` reassembles them. |
+| `DSF` | `Dp Blk Bytes FMn FMx FAv` | logger statistics: `Dp` is the count of records **dropped** for lack of buffer |
+| `ARM` | `ArmState ArmChecks Forced Method` | arming state changes; the witness for "armed" when the log opened at arming and `EV 10` is missing |
+| `RTC` | `Epoch Src` (4.7+) | wall-clock epoch, when the RTC has been set |
 | `EV` | `Id` | see `dflog.flight.EVENTS` for the full id table |
 | `MODE` | `Mode ModeNum Rsn` | see `dflog.flight.MODES` |
 | `ERR` | `Subsys ECode` | subsystem errors; LogAnalyzer's map is in `reference/thresholds.md` |

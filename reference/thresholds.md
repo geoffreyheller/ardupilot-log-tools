@@ -1,6 +1,6 @@
 # Thresholds and where they came from
 
-Every number `alog.py` grades against lives in `dflog/checks.py::T` with a `source` field.
+Every number `alog` grades against lives in `dflog/checks.py::T` with a `source` field.
 This file is the provenance and the reasoning. **Do not hardcode a threshold in a script**
 — add it to `T`.
 
@@ -148,3 +148,26 @@ them out of a removed directory again.
 LA's `ERR` subsystem map: 2/1 PPM, 3/1|2 COMPASS, 5/1 FS_THR, 6/1 FS_BATT, 7/1 GPS,
 8/1 GCS, 9/1|2 FENCE, 10 FLT_MODE, 11/2 GPS_GLITCH, 12/1 CRASH. FENCE-only → WARN, the
 rest → FAIL.
+
+---
+
+## Added September 2026 (v2.0)
+
+| key | warn | fail | source |
+|---|---|---|---|
+| `imu_match_mss` | 0.75 | 1.5 | LA `TestIMUMatch` — low-passed accel-magnitude difference between IMUs, m/s² |
+| `gyro_bias_dps` | 1.0 | 3.0 | MEAS — largest-axis mean gyro rate over the airborne window, deg/s |
+| `att_div_deg` | 5 | 10 | DLA `attitude_estimate_divergence` — ATT vs AHR2 / XKF1, p99 of the difference |
+| `alt_div_m` | 4 | 5 | DLA `altitude_estimate_divergence` — baro vs EKF relative altitude, p99 |
+| `gps_glitch_speed` | 30 m/s | 60 m/s | MEAS — implied ground speed between consecutive 3D fixes on a multirotor |
+| `free_mem_bytes` | < 20000 | < 5000 | MEAS — `PM.Mem` minimum; scripting and logging need headroom |
+| `brownout_alt_m` | 1 m | 3 m | LA `TestBrownout` — still armed at log end with `BAlt` above this |
+| `lean_over_max_deg` | > 0 | > 10 | LA `TestPitchRollCoupling` — lean beyond `ANGLE_MAX` |
+| `motor_peak_db` | 25 dB | 40 dB | WIKI — `FFT_SNR_REF` default 25 dB; `FFT_OPTIONS` warns above 40 dB of motor noise |
+
+The "LogAnalyzer checks not yet ported" list above is now history: Brownout, IMUMatch,
+PitchRollCoupling, NaN, DupeLogData, Params, Autotune and Empty are ported (see
+`reference/existing-tools.md` for the mapping). `TestThrust` was not — its throttle
+threshold of 700 can never be met by the modern 0–1 `CTUN.ThO`, so the check is dead on
+every log this tool will see. `TestOptFlow` was not — no optical flow on the development
+aircraft; the calibration procedure is documented in the source survey.

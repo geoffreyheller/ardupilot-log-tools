@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ardupilot-log-tools"
+version = "2.0.0"
+description = "Agent-first ArduPilot dataflash (.bin) log analysis: a fail-loud parser, a cited check battery, local FFT, and machine-readable output."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.22",
+    "pandas>=1.4",
+    "scipy>=1.8",
+]
+
+[project.optional-dependencies]
+plot = ["matplotlib>=3.5"]
+test = ["pytest>=7"]
+
+[project.scripts]
+alog = "dflog.cli:entry"
+alog-plot-notch = "dflog.plot_notch:main"
+
+[tool.setuptools]
+packages = ["dflog"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

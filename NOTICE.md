@@ -47,5 +47,15 @@ pages on [IMU batch sampling](https://ardupilot.org/copter/docs/common-imu-batch
 [in-flight FFT](https://ardupilot.org/copter/docs/common-imu-fft.html) and
 [analog current calibration](https://ardupilot.org/copter/docs/common-analog-current-calibration.html).
 
-`reference/existing-tools.md` carries a fuller survey of the ecosystem, including what was
-evaluated and rejected.
+**[ArduPilot/MissionPlanner](https://github.com/ArduPilot/MissionPlanner)** — GPL-3.0 —
+and **[ArduPilot/WebTools](https://github.com/ArduPilot/WebTools)** were read for their
+FFT and hardware-report methods; the comparison in `reference/existing-tools.md` records what
+was learned (notably that neither guards `ISBD.seqno`, and that WebTools decodes `DSF.Dp`).
+
+The ArduPilot firmware's own logger (`libraries/AP_Logger`, GPL-3.0) was read as the
+*writer* of the format; the facts about field limits, self-description order, padding and
+message ids in `reference/dataflash-format.md` come from it, as do the event, error and
+mode-reason enumerations in `dflog/flight.py`.
+
+`reference/existing-tools.md` carries the full audit of the ecosystem, including how each
+reader behaves on malformed input and which checks each analyser computes.

@@ -123,7 +123,14 @@ def test_attitude_error_sd_matches_reference_a():
 
 
 def test_standing_trim_matches_reference_a():
-    """Reference (un-normalised factors): roll +8.3, pitch +12.9, yaw +22.6 us."""
+    """Raw *channel*-ordered math, un-normalised factors: +8.3 / +12.9 / +22.6 us.
+
+    This pins the arithmetic only. These are NOT this aircraft's roll/pitch/yaw
+    trims: log A comes from a board whose SERVOn_FUNCTION puts motor 4 on output
+    1, so feeding C1..C4 straight in permutes the axes. See
+    `test_channel_to_motor_map_is_read_from_servo_functions` for the real
+    figures, and `motor_channels()` for why.
+    """
     log = _load(LOG_A)
     w = airborne_window(log, method="rpm")
     rcou = w.clip(log.df("RCOU"))
@@ -132,6 +139,33 @@ def test_standing_trim_matches_reference_a():
     assert tr["roll"] == pytest.approx(8.3, abs=0.2)
     assert tr["pitch"] == pytest.approx(12.9, abs=0.2)
     assert tr["yaw"] == pytest.approx(22.6, abs=0.2)
+
+
+def test_channel_to_motor_map_is_read_from_servo_functions():
+    """Log A's board maps SERVO1..4_FUNCTION = 36,33,34,35, i.e. C1 is motor 4.
+
+    Decoded in motor order the same flight reads roll -22.6, pitch -9.2,
+    yaw +5.8 us: a thrust asymmetry with essentially no standing torque, not
+    the +22.6 us "yaw" that the channel-ordered arithmetic above produces.
+    """
+    from dflog.frames import motor_channels
+    log = _load(LOG_A)
+    p = log.params()
+    assert motor_channels(p, 4) == ["C2", "C3", "C4", "C1"]
+    w = airborne_window(log, method="rpm")
+    rcou = w.clip(log.df("RCOU"))
+    means = [float(rcou[c].mean()) for c in motor_channels(p, 4)]
+    tr = trim_decomposition(means, mix_for(1, 1))
+    assert tr["roll"] == pytest.approx(-22.6, abs=0.2)
+    assert tr["pitch"] == pytest.approx(-9.2, abs=0.2)
+    assert tr["yaw"] == pytest.approx(5.8, abs=0.2)
+
+
+def test_motor_channels_falls_back_when_unmapped():
+    from dflog.frames import motor_channels
+    assert motor_channels({}, 4) is None
+    assert motor_channels({f"SERVO{i}_FUNCTION": 32 + i for i in (1, 2, 3, 4)}, 4) \
+        == ["C1", "C2", "C3", "C4"]
 
 
 def test_ekf_mag_innovation_matches_reports():
@@ -165,12 +199,19 @@ def test_rpm_spread_matches_reference_b():
 
 
 def test_yaw_trim_matches_reference_b():
-    """Reference: yaw trim +25.3 us. Yaw is identical under both factor conventions."""
+    """Motor-ordered: roll -25.3, pitch +23.0, yaw +1.1 us.
+
+    Superseded 2026-09-04. The earlier pin of "yaw trim +25.3" was the
+    channel-ordered figure; on this board C1 is motor 4, so what was called yaw
+    was really -roll. The standing torque is ~1 us; the asymmetry is thrust.
+    """
     log = _load(LOG_B)
     w = airborne_window(log, method="rpm")
     sec = check_motors(log, w)
-    yaw = next(r for r in sec.results if r.name == "yaw trim")
-    assert yaw.evidence["signed"] == pytest.approx(25.3, abs=0.1)
+    got = {r.name: r.evidence["signed"] for r in sec.results if r.name.endswith(" trim")}
+    assert got["roll trim"] == pytest.approx(-25.3, abs=0.1)
+    assert got["pitch trim"] == pytest.approx(23.0, abs=0.1)
+    assert got["yaw trim"] == pytest.approx(1.1, abs=0.1)
 
 
 def test_notch_tracking_matches_reference_b():
