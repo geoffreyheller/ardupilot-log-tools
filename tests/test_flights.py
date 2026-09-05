@@ -23,13 +23,7 @@ try:
 except ImportError:                     # PyPI is blocked in the sandbox; see tests/_shim.py
     import _shim as pytest
 
-from dflog import Log, airborne_window, arm_window, hover_chunks      # noqa: E402
-
-try:
-    from dflog.flight import flights                                  # noqa: E402
-except ImportError:                     # TEMPORARY: the pre-fix tree has no segmenter.
-    def flights(*_a, **_kw):            # Group B must still run and stay green.
-        raise AssertionError("dflog.flight.flights() does not exist yet")
+from dflog import Log, airborne_window, arm_window, flights, hover_chunks      # noqa: E402
 
 TMP = tempfile.mkdtemp(prefix="dflog-flights-")
 
@@ -296,7 +290,7 @@ def test_bounced_landing_is_one_flight():
 def test_unterminated_flight_closes_at_log_end():
     """A log that ends while still airborne: one segment, closed at the end of the log,
     and the note says so rather than pretending the aircraft landed."""
-    log = _make([(10.0, None)], "unterminated.bin", ctun=False, esc=False)
+    log = _make([(10.0, None)], "unterminated.bin")
     fl = flights(log, method="ev")
     assert len(fl) == 1
     hi = log.duration()[1]

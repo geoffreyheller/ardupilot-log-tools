@@ -4,20 +4,21 @@
 
     log = Log("flight.bin")            # parses once, caches beside the log
     log.diagnostics.ok                 # False if anything in the file was wrong
-    w   = airborne_window(log, "rpm")  # the window, with the method that chose it
+    w   = airborne_window(log, "rpm")  # one flight, with the method that chose it
+    flights(log)                       # every flight the log holds, in time order
 
 See ../CLAUDE.md for how to use this in an analysis session, ../RULES.md for the
 contract every output obeys, and ../reference/ for the message, threshold, pitfall and
 integrity-code references.
 """
 from .parser import Log, FORMAT_CHARS, Diagnostics, Issue, LogIntegrityError, gps_to_unix
-from .flight import (Window, airborne_window, arm_window, mode_timeline, events,
+from .flight import (Window, airborne_window, arm_window, flights, mode_timeline, events,
                      esc_fundamental, hover_chunks, EVENTS, MODES, MODE_REASONS)
 from .frames import MotorMix, mix_for, trim_decomposition, motor_channels, FRAME_CLASSES, FRAME_TYPES
 from . import stats, report, spectral
 
 __all__ = ["Log", "FORMAT_CHARS", "Diagnostics", "Issue", "LogIntegrityError", "gps_to_unix",
-           "Window", "airborne_window", "arm_window", "mode_timeline", "events", "esc_fundamental",
+           "Window", "airborne_window", "arm_window", "flights", "mode_timeline", "events", "esc_fundamental",
            "hover_chunks", "EVENTS", "MODES", "MODE_REASONS",
            "MotorMix", "mix_for", "trim_decomposition", "motor_channels", "FRAME_CLASSES",
            "FRAME_TYPES", "stats", "report", "spectral"]
