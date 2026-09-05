@@ -33,6 +33,8 @@ def main(argv=None):
     ap.add_argument("-o", "--out", default="notch-verification.png")
     ap.add_argument("--window", default="rpm", metavar="METHOD",
                     help="auto|ev|rpm|throttle|arm|none or T0:T1 seconds")
+    ap.add_argument("--flight", type=int, default=None, metavar="N",
+                    help="which flight on a log holding more than one (default: the longest)")
     ap.add_argument("--fmax", type=float, default=500.0)
     args = ap.parse_args(argv)
 
@@ -49,7 +51,14 @@ def main(argv=None):
     log = Log(args.log)
     if not log.diagnostics.ok:
         print(log.diagnostics.render(), file=sys.stderr)
-    w = airborne_window(log, method=args.window)
+    try:
+        w = airborne_window(log, method=args.window, flight=args.flight)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 3
+    if w.segments and len(w.segments) > 1:
+        print(f"note: this log holds {len(w.segments)} flights; plotting flight {w.index} "
+              f"({w.t0:.1f}-{w.t1:.1f} s). Use --flight N for another.", file=sys.stderr)
     sec = check_batch_fft(log, w)
     spectra = sec.data.get("spectra", {})
     t, fund = esc_fundamental(log)

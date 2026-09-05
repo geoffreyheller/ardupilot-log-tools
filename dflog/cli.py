@@ -4,6 +4,8 @@
     alog all       flight.bin              # the standard battery
     alog all       flight.bin --json       # same, as one JSON document
     alog motors    flight.bin --window rpm # one check
+    alog all       flight.bin --flight 2   # one flight of a log that holds several
+    alog all       flight.bin --flight all # every flight, one block each
     alog fft       flight.bin --plot fft.png
     alog compare   before.bin after.bin    # like-for-like, identical code both sides
     alog types     flight.bin              # what messages this log actually contains
@@ -29,7 +31,7 @@ import sys
 
 from . import __version__
 from .parser import Log, LogIntegrityError
-from .flight import airborne_window, WINDOW_METHODS
+from .flight import airborne_window, flights, WINDOW_METHODS
 from .analysis import ALL_CHECKS, run, Section
 from .checks import FAIL, PASS, SKIP, WARN, T
 from .report import fmt, table
@@ -104,9 +106,29 @@ def _load(path, args):
     return log
 
 
-def _window(log, args):
+def _flight_arg(args):
+    """--flight as the library sees it: None, an int, or the string "all"."""
+    v = getattr(args, "flight", None)
+    if v in (None, ""):
+        return None
+    if str(v).lower() == "all":
+        return "all"
     try:
-        return airborne_window(log, method=args.window, pad=args.pad)
+        return int(v)
+    except ValueError:
+        raise InputError(f"--flight {v!r}: expected a 1-based flight number or 'all'")
+
+
+def _log_flights(log):
+    """Every flight in the log, as JSON-ready dicts. Emitted next to `window` so a
+    reader of the document can always tell what was left out of it."""
+    return [dict(index=f.index, t0=f.t0, t1=f.t1, duration_s=f.duration,
+                 source=f.method.split(", flight")[0]) for f in flights(log, method="auto")]
+
+
+def _window(log, args, flight=None):
+    try:
+        return airborne_window(log, method=args.window, pad=args.pad, flight=flight)
     except ValueError as exc:
         raise InputError(str(exc))
 
@@ -118,6 +140,8 @@ def _envelope(command, log=None, window=None, **extra):
                           n_messages=log.n_messages, integrity=log.diagnostics.to_dict())
     if window is not None:
         env["window"] = window.to_dict()
+        if log is not None:
+            env["flights"] = _log_flights(log)
     env.update(extra)
     return env
 
@@ -168,9 +192,51 @@ def _verdict_md(secs):
 
 # ------------------------------------------------------------------ commands
 
+# Checks that look at the whole log and never touch the window. Under --flight all
+# they are run once, not repeated identically inside every per-flight block.
+WHOLE_LOG_CHECKS = ("integrity", "events", "brownout")
+
+
+def _labelled(secs, index):
+    """Copies of `secs` whose result names carry the flight they came from.
+
+    The combined verdict under --flight all mixes results from every flight; two bare
+    "motor balance" WARNs with no flight attached would break RULES §2, which is the
+    whole reason this change exists. The per-flight sections keep the plain names.
+    """
+    import copy
+    out = []
+    for s in secs:
+        c = copy.copy(s)
+        c.results = []
+        for r in s.results:
+            rr = copy.copy(r)
+            rr.evidence = dict(r.evidence, flight=index)
+            rr.name = f"flight {index}: {r.name}"
+            c.results.append(rr)
+        out.append(c)
+    return out
+
+
+def _flights_note(log, w):
+    """The line under the window header that names the flights this report is not about."""
+    fl = _log_flights(log)
+    if len(fl) < 2:
+        return ""
+    listing = ", ".join(f"{f['index']}: {f['t0']:.1f}-{f['t1']:.1f} s" for f in fl)
+    if w is None:
+        return f"**This log holds {len(fl)} flights** ({listing}).\n"
+    return (f"**This log holds {len(fl)} flights** ({listing}); the window above is "
+            + (f"flight {w.index}" if w.index else "not one of them")
+            + ". Use `--flight N` for another, or `--flight all` for every one.\n")
+
+
 def cmd_check(args, names):
     log = _load(args.log, args)
-    w = _window(log, args)
+    flight = _flight_arg(args)
+    if flight == "all":
+        return _cmd_check_all(args, names, log)
+    w = _window(log, args, flight=flight)
     secs = run(log, names, window=w, normalise=not args.raw_factors)
     if args.json:
         counts, bad = _verdict(secs)
@@ -184,10 +250,70 @@ def cmd_check(args, names):
     print(_integrity_header(log) + "\n")
     print(f"Window: {w.t0:.1f}-{w.t1:.1f} s ({w.duration:.1f} s) via **{w.method}**. "
           f"Quote this method when comparing flights.\n")
+    note = _flights_note(log, w)
+    if note:
+        print(note)
     for s in secs:
         print(s.render())
     print(_verdict_md(secs))
     return _exit_code(secs)
+
+
+def _cmd_check_all(args, names, log):
+    """--flight all: the battery once per flight, one combined verdict, worst exit code.
+
+    Whole-log checks are emitted once rather than repeated identically under every
+    flight, and the JSON carries `per_flight` *instead of* a top-level `sections`, so an
+    agent keys off the presence of `per_flight` and can never mistake one flight's
+    numbers for the log's.
+    """
+    if args.window == "none" or ":" in args.window:
+        raise InputError(f"--flight all and --window {args.window} contradict each other: "
+                         "an explicit or whole-log window already says which seconds to analyse")
+    fl = flights(log, method=args.window)
+    if len(fl) < 2:
+        # Nothing to spread over: fall back to the ordinary single-window report rather
+        # than emitting a per_flight document with one entry that means something else.
+        args.flight = None
+        return cmd_check(args, names)
+    windows = []
+    for f in fl:
+        w = _window(log, args, flight=f.index)
+        w.scope = "all"
+        windows.append(w)
+    whole = [n for n in (names or CHECK_NAMES) if n in WHOLE_LOG_CHECKS]
+    per_names = [n for n in (names or CHECK_NAMES) if n not in WHOLE_LOG_CHECKS]
+    whole_secs = run(log, whole, window=windows[0], normalise=not args.raw_factors) if whole else []
+    per = [(w, run(log, per_names, window=w, normalise=not args.raw_factors)) for w in windows]
+    every = whole_secs + [s for w, ss in per for s in _labelled(ss, w.index)]
+    code = _exit_code(every)
+    if args.json:
+        counts, bad = _verdict(every)
+        _emit_json(_finite(_envelope("all" if names is None else ",".join(names), log, windows[0],
+                                     whole_log_sections=[s.to_dict() for s in whole_secs],
+                                     per_flight=[dict(index=w.index, window=w.to_dict(),
+                                                      sections=[s.to_dict() for s in ss],
+                                                      verdict=dict(counts=_verdict(ss)[0],
+                                                                   findings=[r.to_dict() for r in _verdict(ss)[1]]),
+                                                      exit_code=_exit_code(ss))
+                                                 for w, ss in per],
+                                     verdict=dict(counts=counts, findings=[r.to_dict() for r in bad]),
+                                     exit_code=code)))
+        return code
+    print(f"# Log analysis - {os.path.basename(args.log)}\n")
+    print(_integrity_header(log) + "\n")
+    print(_flights_note(log, None))
+    print("Every flight below was analysed. Numbers from different flights are NOT "
+          "comparable to each other unless the window method is the same - it is here.\n")
+    for s in whole_secs:
+        print(s.render())
+    for w, ss in per:
+        print(f"\n# Flight {w.index} of {len(fl)} - {w.t0:.1f}-{w.t1:.1f} s "
+              f"({w.duration:.1f} s) via **{w.method}**\n")
+        for s in ss:
+            print(s.render())
+    print(_verdict_md(every))
+    return code
 
 
 def cmd_info(args):
@@ -213,6 +339,16 @@ def cmd_info(args):
     print(q.render())
     print()
     print(f"Auto window: {w.t0:.1f}-{w.t1:.1f} s ({w.duration:.1f} s) via {w.method}")
+    fl = _log_flights(log)
+    if fl:
+        print(f"Flights in log: {len(fl)} " + ("flight" if len(fl) == 1 else "flights") + " - "
+              + "; ".join(f"{f['index']}: {f['t0']:.1f}-{f['t1']:.1f} s ({f['duration_s']:.1f} s)" for f in fl)
+              + (f" [{fl[0]['source']}]"))
+        if len(fl) > 1:
+            print("More than one flight: every windowed command analyses ONE of them. "
+                  "Use --flight N, or --flight all.")
+    else:
+        print("Flights in log: none found by any detector (ev, rpm, throttle, arm).")
     print(cov.render())
     return 0 if log.diagnostics.ok else 2
 
@@ -303,8 +439,15 @@ def cmd_dump(args):
         if args.instance not in inst:
             raise InputError(f"{args.message}: no instance {args.instance}; have {sorted(inst)}")
         d = inst[args.instance]
+    flight = _flight_arg(args)
+    if flight == "all":
+        raise InputError("--flight all is meaningless for `dump`: one CSV of two disjoint "
+                         "flights is not a thing. Use --flight N, or --window none.")
     if args.window != "none":
-        d = _window(log, args).clip(d)
+        d = _window(log, args, flight=flight).clip(d)
+    elif flight is not None:
+        raise InputError("--window none and --flight contradict each other: 'none' is the "
+                         "whole log, every flight included")
     if args.fields:
         want = [c for c in args.fields.split(",") if c]
         missing = [c for c in want if c not in d.columns]
@@ -397,10 +540,15 @@ def cmd_compare(args):
     unknown = [n for n in names if n not in CHECK_NAMES]
     if unknown:
         raise InputError(f"unknown check(s): {', '.join(unknown)}; known: {', '.join(CHECK_NAMES)}")
+    flight = _flight_arg(args)
+    if flight == "all":
+        raise InputError("--flight all is meaningless for `compare`: two logs that each "
+                         "hold several flights have no single comparison table. Use "
+                         "--flight N, applied to every log.")
     logs = [(p, _load(p, args)) for p in args.logs]
     per = []
     for path, log in logs:
-        w = _window(log, args)
+        w = _window(log, args, flight=flight)
         secs = run(log, names, window=w, normalise=not args.raw_factors)
         per.append((os.path.basename(path), log, w, {r.name: r for s in secs for r in s.results}))
     keys = []
@@ -417,8 +565,10 @@ def cmd_compare(args):
     print("# Like-for-like comparison\n")
     print("Both logs run through identical code, so every pair below is comparable.\n")
     for name, log, w, _ in per:
-        print(f"- **{name}**: window {w.t0:.1f}-{w.t1:.1f} s ({w.duration:.1f} s) via {w.method}; "
-              f"integrity: {log.diagnostics.summary()}")
+        n_fl = len(w.segments) if w.segments else 1
+        print(f"- **{name}**: window {w.t0:.1f}-{w.t1:.1f} s ({w.duration:.1f} s) via {w.method}"
+              + (f"; {n_fl} flights in the log" if n_fl > 1 else "")
+              + f"; integrity: {log.diagnostics.summary()}")
     print()
     rows = []
     for k in keys:
@@ -438,7 +588,11 @@ def cmd_compare(args):
 def cmd_fft(args):
     from .spectral import analyse, sources, SpectralError
     log = _load(args.log, args)
-    w = _window(log, args)
+    flight = _flight_arg(args)
+    if flight == "all":
+        raise InputError("--flight all is meaningless for `fft`: one transform of two "
+                         "disjoint flights is not a thing. Use --flight N.")
+    w = _window(log, args, flight=flight)
     srcs = sources(log)
     if args.list_sources:
         if args.json:
@@ -556,7 +710,10 @@ def cmd_schema(args):
     schema = dict(
         schema=SCHEMA_VERSION,
         description="Every JSON document alog emits carries schema, tool, version, command, and "
-                    "(when a log was read) log.integrity. Check reports add window, sections, verdict, exit_code.",
+                    "(when a log was read) log.integrity. Check reports add window, flights, sections, "
+                    "verdict, exit_code. Under --flight all there is no top-level `sections`: the "
+                    "windowed checks are under `per_flight` and the whole-log ones under "
+                    "`whole_log_sections`. Key off the presence of `per_flight`.",
         exit_codes={0: "all results PASS or SKIP", 1: "at least one WARN", 2: "at least one FAIL",
                     3: "input error: missing file, not a dataflash log, unknown check, or --strict rejected the log"},
         result=dict(name="str", status="PASS|WARN|FAIL|SKIP", summary="str, always contains the number",
@@ -568,7 +725,13 @@ def cmd_schema(args):
                        issues="[{code, severity, subject, message, count, first_offset, offsets, detail}]",
                        codes="see reference/integrity-codes.md"),
         window=dict(t0="s since boot", t1="s", duration_s="s", method="how it was chosen - quote it",
-                    note="str"),
+                    note="str", n_flights="int, flights the log holds (when known)",
+                    flight_index="1-based flight this window is, or null"),
+        flights="[{index, t0, t1, duration_s, source}] - every flight in the log, so a reader "
+                "can always tell what the window left out. A log with more than one flight is a "
+                "WARN unless every flight was analysed",
+        per_flight="[{index, window, sections, verdict, exit_code}] - present INSTEAD of "
+                   "`sections` under --flight all; whole-log checks are in `whole_log_sections`",
         checks=CHECK_NAMES,
         window_methods=list(WINDOW_METHODS) + ["T0:T1"],
         thresholds={k: dict(warn=v["warn"], fail=v["fail"], source=v["source"], note=v["note"]) for k, v in T.items()},
@@ -596,6 +759,9 @@ def main(argv=None):
                        help="airborne window: " + "|".join(WINDOW_METHODS) + " or T0:T1 seconds; "
                             "'rpm' is the most reproducible for motor/notch work (default auto)")
         p.add_argument("--pad", type=float, default=0.0, help="trim N seconds off each end of the window")
+        p.add_argument("--flight", metavar="N|all", default=None,
+                       help="which flight to analyse on a log holding more than one "
+                            "(default: the longest). 'all' runs the battery once per flight")
 
     def add_common(p):
         p.add_argument("log")
@@ -644,6 +810,8 @@ def main(argv=None):
     q.add_argument("--checks", help=f"comma-separated subset of: {', '.join(CHECK_NAMES)}")
     q.add_argument("--window", default="rpm", metavar="METHOD")
     q.add_argument("--pad", type=float, default=0.0)
+    q.add_argument("--flight", metavar="N", default=None,
+                   help="which flight to analyse in each log (default: the longest); 'all' is rejected")
     q.add_argument("--raw-factors", action="store_true")
     q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     q = sub.add_parser("fft", help="local FFT (scipy) of a logged signal, peaks labelled in motor orders")
@@ -673,6 +841,8 @@ def main(argv=None):
     args.json = bool(getattr(args, "json", False)) or "--json" in (argv if argv is not None else sys.argv[1:])
     if not hasattr(args, "window"):
         args.window, args.pad = "auto", 0.0
+    if not hasattr(args, "flight"):
+        args.flight = None
     if not hasattr(args, "raw_factors"):
         args.raw_factors = False
 

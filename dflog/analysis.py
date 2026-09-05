@@ -20,7 +20,7 @@ from __future__ import annotations
 import numpy as np
 
 from .checks import T, Result, PASS, WARN, FAIL, SKIP
-from .flight import EVENTS, airborne_window, esc_fundamental, events, mode_timeline
+from .flight import EVENTS, airborne_window, esc_fundamental, events, flights, mode_timeline
 from .frames import mix_for, trim_decomposition, motor_channels
 from .report import table, fmt, heading
 from .stats import band_split, corr, describe, pct_above, peak_hz
@@ -169,6 +169,8 @@ def check_summary(log, w):
         if dur > 1 and (not mode_names or mode_names[-1][0] != name):
             mode_names.append((name, dur))
     info = log.info()
+    fl = flights(log, method="auto")
+    fl_spans = [(f.t0, f.t1) for f in fl]
     rows = [
         ["log", info["file_name"]],
         ["size", f"{info['file_size']} bytes, sha256 {info['sha256'][:16]}..."],
@@ -180,6 +182,8 @@ def check_summary(log, w):
         ["log span", f"{lo:.1f} - {hi:.1f} s ({hi - lo:.1f} s)" if lo is not None else "no timestamps"],
         ["UTC start", info["log_start_utc"] or "unknown (no GPS time in log; a 1980 file date is the unset RTC)"],
         ["airborne window", f"{w.t0:.1f} - {w.t1:.1f} s ({w.duration:.1f} s) via {w.method}"],
+        ["flights in log", ("; ".join(f"{i}: {a:.1f}-{b:.1f} s" for i, (a, b) in enumerate(fl_spans, 1))
+                            or "none found by any detector") if fl_spans else "none found by any detector"],
         ["frame", f"FRAME_CLASS={fmt(p.get('FRAME_CLASS'))} FRAME_TYPE={fmt(p.get('FRAME_TYPE'))}"],
         ["params in log", str(len(p))],
         ["modes flown", ", ".join(f"{n} {d:.0f}s" for n, d in mode_names) or "-"],
@@ -189,6 +193,7 @@ def check_summary(log, w):
     if fw:
         sec.note("Firmware banner:\n```\n" + "\n".join("  " + m for m in fw) + "\n```")
     sec.data["info"] = info
+    sec.data["flights"] = [dict(index=f.index, t0=f.t0, t1=f.t1, duration_s=f.duration) for f in fl]
     return sec
 
 
@@ -985,6 +990,29 @@ def check_events(log, w):
 def check_flight(log, w):
     """Did it arm, did it fly, what did autotune do, did it exceed ANGLE_MAX."""
     sec = Section("Flight", key="flight")
+    fl = flights(log, method="auto")
+    sec.data["flights"] = [dict(index=f.index, t0=f.t0, t1=f.t1, duration_s=f.duration) for f in fl]
+    if fl:
+        covered = [f.index for f in fl if w.t0 <= f.t0 + 0.5 and w.t1 >= f.t1 - 0.5]
+        listing = ", ".join(f"{f.t0:.1f}-{f.t1:.1f} s" for f in fl)
+        source = f"flight segmentation via {fl[0].method.split(', flight')[0]}"
+        if len(fl) == 1:
+            sec.add(Result("flights in log", PASS, f"1 flight ({listing})",
+                           evidence=dict(n_flights=1, flights=sec.data["flights"]), source=source))
+        elif w.scope == "all" or len(covered) == len(fl):
+            sec.add(Result("flights in log", PASS,
+                           f"{len(fl)} flights ({listing}); all of them analysed",
+                           evidence=dict(n_flights=len(fl), analysed=covered,
+                                         flights=sec.data["flights"]), source=source))
+        else:
+            this = w.index or (covered[0] if covered else None)
+            sec.add(Result("flights in log", WARN,
+                           f"{len(fl)} flights ({listing}); this report covers "
+                           + (f"flight {this} of {len(fl)}" if this else "only part of the log")
+                           + f" ({w.t0:.1f}-{w.t1:.1f} s). Use --flight N for another, "
+                             "or --flight all for every one.",
+                           evidence=dict(n_flights=len(fl), analysed=covered, flight_index=this,
+                                         flights=sec.data["flights"]), source=source))
     ev = events(log)
     arm = [t for t, i, _ in ev if i == 10]
     dis = [t for t, i, _ in ev if i == 11]
@@ -1505,13 +1533,16 @@ ALL_CHECKS = [
 ]
 
 
-def run(log, names=None, window=None, method="auto", **kw):
+def run(log, names=None, window=None, method="auto", flight=None, **kw):
     """Run checks by name (default: all). Returns [Section].
 
     A check that raises is reported as a FAIL result naming the exception - a broken
     check must never kill the report, and must never look like a clean one either.
+
+    `flight` (1-based) selects one flight on a log that holds several, so a library
+    caller need not construct the window itself. Ignored when `window` is given.
     """
-    w = window or airborne_window(log, method=method)
+    w = window or airborne_window(log, method=method, flight=flight)
     out = []
     for name, fn in ALL_CHECKS:
         if names and name not in names:
