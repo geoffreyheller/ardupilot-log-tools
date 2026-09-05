@@ -103,6 +103,12 @@ Windows: `--window auto|ev|rpm|throttle|arm|none` or an explicit `--window 120:1
 (seconds since boot). `rpm` (fleet-mean ESC fundamental above 90 Hz) is the one to use for
 motor, notch and vibration work and for any before/after comparison.
 
+Flights: a log can hold more than one. The window is always **one** of them - never the
+span across the ground time between two - and the method string says which. `--flight N`
+picks one (default: the longest), `--flight all` runs the battery once per flight, and
+`alog info` lists them. A log with more than one flight analysed one flight at a time is
+a WARN, so it cannot pass unnoticed.
+
 As a library:
 
 ```python
@@ -187,7 +193,7 @@ AGENTS.md                 pointer for other agent frameworks
 dflog/
   parser.py               .bin reader + Diagnostics + on-disk cache (fails loudly)
   textlog.py              .log text-export reader (flagged as second-class)
-  flight.py               window selection, events, modes, mode reasons, hover chunks
+  flight.py               flight segmentation and window selection, events, modes, hover chunks
   frames.py               motor-mix geometry, channel map, trim decomposition
   analysis.py             the check battery (Sections with tables + notes)
   checks.py               Result contract + the cited threshold registry T
@@ -206,7 +212,8 @@ reference/
 templates/                report template
 tests/
   synthlog.py             a DataFlash writer for building malformed test logs
-  test_parser_integrity.py, test_cli.py   run anywhere, no flight data needed
+  test_parser_integrity.py, test_cli.py, test_flights.py
+                          run anywhere, no flight data needed
   test_toolkit.py         pinned regression figures; needs LOG_DIR
 tools/bootstrap_pymavlink.py (and .sh)   vendor pymavlink when you want mavextra/mavfft_isb
 ```
@@ -231,6 +238,7 @@ JsDataflashParser behave on the same inputs.
 ```bash
 python tests/test_parser_integrity.py        # synthetic malformed logs: every integrity code
 python tests/test_cli.py                     # exit codes and the JSON contract
+python tests/test_flights.py                 # flight segmentation and window selection
 python tests/test_toolkit.py                 # pinned regression figures (skips without LOG_DIR)
 LOG_DIR=/path/to/logs python tests/test_toolkit.py
 ```

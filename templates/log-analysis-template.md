@@ -3,10 +3,12 @@
 **Log:** `<file>.bin` (<size>) · **Params that flew:** `<Vehicle> Ardupilot Params - YYYY-MM-DDx.param`
 **Comparison:** `<earlier log>.bin` · **Firmware:** ArduCopter x.y.z (<hash>)
 **Armed:** <n> s · **Airborne:** <n> s · **Window:** <t0>–<t1> s via <method>
+**Flights in log:** <n> (<list them>) — this report covers <which>
 **Analysed:** YYYY-MM-DD with `ardupilot-log-tools` v<x> (`python alog.py all --json`)
 
 > State any oddity about the log itself here — an unset RTC giving a 1980 date, a
-> truncated file, a lost predecessor flight.
+> truncated file, a lost predecessor flight, a second flight in the same file that this
+> report does not cover.
 
 ---
 

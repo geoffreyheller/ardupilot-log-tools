@@ -33,6 +33,37 @@ with open(os.path.join(TMP, "prose.txt"), "w") as _fh:
 PROSE = os.path.join(TMP, "prose.txt")
 
 
+def _two_flight_log(path, spans=((10.0, 60.0), (120.0, 170.0)), span=180.0, hz=10.0):
+    """A log holding two flights with 60 s of ground time between them (issue #1)."""
+    w = LogWriter()
+    w.fmt(96, "PARM", "QNff", "TimeUS,Name,Value,Default")
+    w.fmt(97, "MSG", "QZ", "TimeUS,Message")
+    w.fmt(64, "EV", "QB", "TimeUS,Id")
+    w.fmt(202, "ESC", "QBff", "TimeUS,Instance,RPM,Volt")
+    w.fmt(203, "CTUN", "Qf", "TimeUS,ThO")
+    w.fmt(204, "ARM", "QBBH", "TimeUS,ArmState,ArmChecks,Forced")
+    w.msg("MSG", TimeUS=20, Message="ArduCopter V4.7.1 (deadbeef)")
+    w.msg("PARM", TimeUS=30, Name="FRAME_CLASS", Value=1.0, Default=1.0)
+    w.msg("PARM", TimeUS=31, Name="FRAME_TYPE", Value=1.0, Default=1.0)
+    for t0, t1 in spans:
+        w.msg("EV", TimeUS=int(t0 * 1e6), Id=28)
+        w.msg("EV", TimeUS=int(t1 * 1e6), Id=18)
+        w.msg("EV", TimeUS=int((t0 - 5) * 1e6), Id=10)
+        w.msg("ARM", TimeUS=int((t0 - 5) * 1e6), ArmState=1, ArmChecks=0, Forced=0)
+        w.msg("EV", TimeUS=int((t1 + 5) * 1e6), Id=11)
+        w.msg("ARM", TimeUS=int((t1 + 5) * 1e6), ArmState=0, ArmChecks=0, Forced=0)
+    for i in range(int(span * hz)):
+        t = i / hz
+        up = any(a <= t <= b for a, b in spans)
+        for inst in range(4):
+            w.msg("ESC", TimeUS=int(t * 1e6), Instance=inst, RPM=8400.0 if up else 0.0, Volt=7.8)
+        w.msg("CTUN", TimeUS=int(t * 1e6), ThO=0.5 if up else 0.0)
+    return w.write(path)
+
+
+TWO_FLIGHTS = _two_flight_log(os.path.join(TMP, "two_flights.bin"))
+
+
 def run(*argv):
     out, err = io.StringIO(), io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
@@ -241,6 +272,92 @@ def test_files_command_extracts_embedded_files():
     assert open(os.path.join(out_dir, "SYS_a.txt"), "rb").read() == b"hello"
     code, out, err = run("files", GOOD)
     assert code == 3
+
+
+# ------------------------------------------------------- multi-flight logs (issue #1)
+
+def test_multi_flight_log_is_disclosed_and_warns():
+    """A log holding two flights analysed one flight at a time is a WARN, and the JSON
+    lists every flight - a report outlives the command line that produced it."""
+    code, doc = run_json("all", TWO_FLIGHTS)
+    assert len(doc["flights"]) == 2, doc.get("flights")
+    assert doc["flights"][0]["index"] == 1
+    assert doc["flights"][0]["t0"] == pytest.approx(10.0, abs=0.2)
+    assert doc["flights"][1]["t1"] == pytest.approx(170.0, abs=0.2)
+    assert doc["window"]["t0"] == pytest.approx(10.0, abs=0.2)
+    assert "flight 1 of 2" in doc["window"]["method"]
+    rs = {r["name"]: r for s in doc["sections"] for r in s["results"]}
+    assert "flights in log" in rs, sorted(rs)
+    assert rs["flights in log"]["status"] == "WARN"
+    assert "--flight" in rs["flights in log"]["summary"]
+    assert code >= 1 and doc["exit_code"] == code
+
+
+def test_flight_selection_shifts_the_window():
+    code, doc = run_json("all", TWO_FLIGHTS, "--flight", "2")
+    assert doc["window"]["t0"] == pytest.approx(120.0, abs=0.2)
+    assert "flight 2 of 2" in doc["window"]["method"]
+
+
+def test_flight_out_of_range_is_exit_3_and_names_what_exists():
+    code, out, err = run("all", TWO_FLIGHTS, "--flight", "3")
+    assert code == 3 and "2 flight" in err, err
+    code, doc = run_json("all", TWO_FLIGHTS, "--flight", "3")
+    assert code == 3 and doc["exit_code"] == 3 and "2 flight" in doc["error"]
+
+
+def test_flight_all_runs_the_battery_once_per_flight():
+    code, doc = run_json("all", TWO_FLIGHTS, "--flight", "all")
+    assert "per_flight" in doc and len(doc["per_flight"]) == 2
+    assert "sections" not in doc, "per_flight and sections are mutually exclusive"
+    assert doc["per_flight"][0]["window"]["t0"] == pytest.approx(10.0, abs=0.2)
+    assert doc["per_flight"][1]["window"]["t0"] == pytest.approx(120.0, abs=0.2)
+    # whole-log checks are not repeated per flight
+    per_keys = {s["key"] for s in doc["per_flight"][0]["sections"]}
+    assert "integrity" not in per_keys and "events" not in per_keys
+    assert {s["key"] for s in doc["whole_log_sections"]} >= {"integrity", "events"}
+    # analysing every flight is not a partial analysis
+    rs = [r for f in doc["per_flight"] for s in f["sections"] for r in s["results"]
+          if r["name"] == "flights in log"]
+    assert rs and all(r["status"] == "PASS" for r in rs), rs
+    code_md, md, _ = run("all", TWO_FLIGHTS, "--flight", "all")
+    assert "# Flight 1 of 2" in md and "# Flight 2 of 2" in md
+    assert md.count("## Verdict") == 1
+    assert code_md == code
+
+
+def test_flight_all_on_a_whole_log_check_runs_nothing_per_flight():
+    """`run(log, [])` runs every check - an empty name list is falsy. A whole-log-only
+    selection must not smuggle the entire battery back in, once per flight."""
+    code, doc = run_json("events", TWO_FLIGHTS, "--flight", "all")
+    assert [s["key"] for s in doc["whole_log_sections"]] == ["events"]
+    assert all(f["sections"] == [] for f in doc["per_flight"]), \
+        [s["key"] for s in doc["per_flight"][0]["sections"]]
+
+
+def test_flight_all_is_rejected_where_it_makes_no_sense():
+    code, out, err = run("dump", TWO_FLIGHTS, "ESC", "--flight", "all")
+    assert code == 3 and "--flight" in err
+    code, out, err = run("fft", TWO_FLIGHTS, "--flight", "all")
+    assert code == 3 and "--flight" in err
+    code, out, err = run("compare", TWO_FLIGHTS, TWO_FLIGHTS, "--flight", "all")
+    assert code == 3 and "--flight" in err
+
+
+def test_info_lists_every_flight():
+    code, doc = run_json("info", TWO_FLIGHTS)
+    assert len(doc["flights"]) == 2
+    code, out, err = run("info", TWO_FLIGHTS)
+    assert "2 flights" in out, out[-1500:]
+    assert "120.0" in out
+
+
+def test_single_flight_log_says_one_flight_and_does_not_warn():
+    code, doc = run_json("all", GOOD)
+    rs = {r["name"]: r for s in doc["sections"] for r in s["results"]}
+    if "flights in log" in rs:
+        assert rs["flights in log"]["status"] in ("PASS", "SKIP")
+    assert "flight 1 of 1" not in doc["window"]["method"]
 
 
 def test_json_flag_position_is_flexible():

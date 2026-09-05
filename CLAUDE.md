@@ -20,6 +20,8 @@ python alog.py all   flight.bin              # the same as markdown
 python alog.py motors flight.bin --window rpm
 python alog.py fft   flight.bin --plot fft.png
 python alog.py compare before.bin after.bin  # like-for-like, identical code both sides
+python alog.py all   flight.bin --flight 2   # one flight of a log that holds several
+python alog.py all   flight.bin --flight all # every flight, one block each
 python alog.py schema                        # the JSON contract, checks, thresholds
 ```
 
@@ -97,7 +99,33 @@ wrong or unusable answer.
 If a method cannot be applied the window falls back to the whole log **and the method
 string says `FALLBACK`**. You can never mistake a fallback for the window you asked for.
 
-`hover_chunks(log)` finds steady LOITER / ALT_HOLD segments with the sticks centred. Use it
+### A log can hold more than one flight
+
+Take off, land, disarm, walk out, re-arm, take off again — one file, two flights. Whatever
+the method, the window is **one** flight, never the span across the ground time between
+two, and the method string says which: `ESC fundamental > 90 Hz, flight 1 of 2`. The
+suffix appears only when there is more than one flight, so single-flight method strings
+are unchanged.
+
+| flag | effect |
+|---|---|
+| *(default)* | the **longest** flight; ties broken to the earliest |
+| `--flight N` | flight N, 1-based. Out of range is exit 3 naming what exists |
+| `--flight all` | the battery once per flight: a markdown block each and one combined verdict, or `per_flight` in JSON *instead of* `sections`. Rejected on `dump`, `fft` and `compare` |
+
+`alog info` always prints the flight table, and `flights` is in every JSON document that
+carries a `window`. **A log with more than one flight is a `WARN`** (`flights in log`,
+exit code ≥ 1) unless every flight was analysed — even when you asked for that one flight
+explicitly, because a report outlives the command line that produced it.
+
+`flights(log, method=...)` returns them all. Two flights are separated by more than
+`gap_seconds` (10 s) of ground time; anything shorter is a bounced landing or a dip below
+the detector's floor, and anything under `min_seconds` (5 s) is a bench spin-up, not a
+flight. Both are keyword arguments on `flights()`, not thresholds in `checks.py::T` — they
+define a window rather than judging an aircraft.
+
+`hover_chunks(log)` finds steady LOITER / ALT_HOLD segments with the sticks centred, each
+clipped to a single flight. Use it
 (via `--window T0:T1`) when a statistic is only meaningful in steady hover — FFT peaks,
 motor balance, vibration baselines. Attitude-error standard deviations rise ~20 % on a
 livelier flight with no change to the tune at all.
@@ -114,7 +142,8 @@ transients.
 - **coverage** — which messages exist at what rate, and whether the fastest gyro source can
   resolve the motor fundamental and its second harmonic. Tells you up front which later
   sections will be `SKIP` and whether FFT work is even possible on this log.
-- **events, flight** — `EV`/`ERR`/`MSG` decoded with subsystem names; prearm messages
+- **events, flight** — how many flights the log holds and which one this report is about;
+  `EV`/`ERR`/`MSG` decoded with subsystem names; prearm messages
   *after* landing are routinely the most informative lines in the whole log. Ever armed,
   ever flew, autotune outcome, lean beyond `ANGLE_MAX`, mode changes the pilot did not
   command.
@@ -261,6 +290,11 @@ stricter is used for WARN. A threshold is a prompt to look, not a verdict.
 
 Full list in `reference/pitfalls.md`.
 
+- **A log can hold more than one flight.** The window is one of them and its method string
+  says which; `alog info` and the `flights` JSON key list them all. Analysing one of
+  several is a WARN. Before this was fixed the `rpm` window spanned the ground time
+  between two flights and produced two confident notch FAILs that were pure window
+  artefacts — `reference/pitfalls.md` has the worked example.
 - **Instance index ≠ physical device.** Which GPS is `GPS[0]` depends on SERIAL port order
   and can change between parameter snapshots. Identify a u-blox unit by the presence of
   `UBX2`, which only the u-blox driver emits.

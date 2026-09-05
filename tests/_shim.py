@@ -46,6 +46,9 @@ def run(module):
         except AssertionError as exc:
             print(f"FAIL {n}: {exc or '(no message)'}")
             failed += 1
+        except SystemExit as exc:       # argparse exits the process on an unknown flag
+            print(f"ERROR {n}: SystemExit({exc.code})")
+            failed += 1
         except Exception as exc:
             print(f"ERROR {n}: {type(exc).__name__}: {exc}")
             failed += 1

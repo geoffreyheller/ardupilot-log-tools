@@ -8,6 +8,23 @@ A threshold is a prompt to look, not a verdict. A clean sheet is not the same as
 flight, and a WARN on a metric that has been stable for ten flights is less interesting
 than a PASS that moved 3× since last time.
 
+## Not thresholds: the window-construction parameters
+
+Four numbers in `dflog/flight.py` look like thresholds and deliberately are not in `T`.
+They do not judge an aircraft — nothing is graded against them and none appears in a
+verdict — they *define a window*, and putting them in the graded table would imply an
+aircraft can fail them.
+
+| name | default | what it means |
+|---|---|---|
+| `hz_floor` | 90 Hz | `--window rpm`: fleet-mean ESC fundamental above this is "airborne". On a low-KV aircraft that cruises below 5400 RPM this floor is wrong and `rpm` is the wrong method — see `reference/pitfalls.md`. |
+| `thr_floor` | 0.15 | `--window throttle`: `CTUN.ThO` above this is "airborne" |
+| `gap_seconds` | 10 s | ground time shorter than this is a bounced landing or a dip below the floor, not a new flight. Large enough that no plausible mid-flight transient splits one flight in two, far below any real disarm / walk-out / re-arm cycle. |
+| `min_seconds` | 5 s | anything shorter is a bench spin-up, not a flight |
+
+They are keyword arguments on `flights()` and `airborne_window()`. `alog schema`'s
+threshold table does not list them, and it should not.
+
 ## Sources
 
 | tag | what it is |
