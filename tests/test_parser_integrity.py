@@ -79,7 +79,7 @@ def test_every_format_char_round_trips():
     w.msg("ALLA", a=list(range(32)), b=-5, c=250, d=-30000, e=60000, f=-2_000_000, g=4_000_000_000,
           h=1.5, i=2.25, j=0.5, k="abcd")
     w.msg("ALLB", l="sixteen chars ok", m="z" * 64, n=-12.34, o=99.99, p=-123456.78, q=1234567.89,
-          r=-35.1332423, s=7, t=-(2 ** 40), u=2 ** 60)
+          r=-12.3456789, s=7, t=-(2 ** 40), u=2 ** 60)
     log = _log(w.bytes())
     assert log.diagnostics.has("NO_PARM") and len(log.diagnostics.issues) == 1, \
         [i.line() for i in log.diagnostics.issues]
@@ -90,7 +90,7 @@ def test_every_format_char_round_trips():
     assert r["h"] == pytest.approx(1.5) and r["j"] == pytest.approx(0.5)
     assert r["k"] == "abcd" and r["l"] == "sixteen chars ok" and r["m"] == "z" * 64
     assert r["n"] == pytest.approx(-12.34) and r["o"] == pytest.approx(99.99)
-    assert r["r"] == pytest.approx(-35.1332423, abs=1e-7)
+    assert r["r"] == pytest.approx(-12.3456789, abs=1e-7)
     assert r["t"] == -(2 ** 40) and r["u"] == 2 ** 60
     assert set(FORMAT_CHARS) == set("abBhHiIfdgn" + "NZcCeELMqQ")
 
