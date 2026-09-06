@@ -43,7 +43,7 @@ motor noise Hz          = ESC.RPM / 60
 eRPM -> RPM             = eRPM / (SERVO_BLH_POLES / 2)
 motor saturation ceiling= SERVO1_MIN + MOT_SPIN_MAX * (SERVO1_MAX - SERVO1_MIN)
 analog current          = V_adc * BATT_AMP_PERVLT + BATT_AMP_OFFSET
-current recalibration   = BATT_AMP_PERVLT * (logged mAh / charger mAh)
+current recalibration   = BATT_AMP_PERVLT * (charger mAh / logged mAh)
 loaded KV               = RPM / (pack_volts * mean output duty)
                           nameplate KV is typically loaded KV / 0.75-0.85
 PM.Load                 = percent * 10

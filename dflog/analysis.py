@@ -814,9 +814,11 @@ def check_power(log, w):
     if not sec.results and not sec.parts:
         sec.add(Result("power", SKIP, "no BAT or POWR messages"))
         return sec
+    # e.g. old PERVLT=50, logged=788 mAh, charger=400 mAh -> new = 50*(400/788) ~= 25.4
+    # (logged > charger means the sensor reads high, so PERVLT must come DOWN, not up)
     sec.note("Absolute current scale is only trustworthy after a charger cross-check:\n"
              "fly a pack, note logged CurrTot mAh, recharge and read the mAh put back, then\n"
-             "BATT_AMP_PERVLT_new = BATT_AMP_PERVLT * (logged / charger).")
+             "BATT_AMP_PERVLT_new = BATT_AMP_PERVLT * (charger / logged).")
     return sec
 
 

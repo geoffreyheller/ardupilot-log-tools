@@ -159,7 +159,7 @@ magnitude, never the correlation.
 
 Absolute current scale is only trustworthy after a charger cross-check: fly a pack, note
 logged `CurrTot`, recharge and read the mAh put back, then
-`BATT_AMP_PERVLT_new = BATT_AMP_PERVLT × (logged ÷ charger)`.
+`BATT_AMP_PERVLT_new = BATT_AMP_PERVLT × (charger ÷ logged)`.
 
 Analog current decode: `A = V_adc × BATT_AMP_PERVLT + BATT_AMP_OFFSET`.
 
