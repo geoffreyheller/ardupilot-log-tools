@@ -145,7 +145,7 @@ r    = spectral.analyse(log, window=w)  # Welch PSD + peaks in motor orders, or 
 | notch | `FCNS.CF` tracking against `ESC.RPM/60` (the notch as applied, not the FFT's opinion) | measured |
 | pid, gust | desired-vs-actual rate correlation split at 5 Hz, `Dmod` slew-limiter engagement, PID output limiting, attitude error, unrequested excursions per second | dronekit-la, measured |
 | ekf, estimates | XKF4 innovation ratios with the count over 1.0, solution-status flags, resets; ATT vs AHR2/XKF1 and baro vs EKF divergence | dronekit-la |
-| compass, power, gps, cpu | field magnitude/variation/health, motor interference, offset magnitudes; current-vs-throttle correlation, board Vcc; sats, HDOP, fix availability, position jumps, glitch ERRs; load, slow loops, free memory, internal errors | LogAnalyzer, dronekit-la, wiki |
+| compass, power, gps, cpu | field magnitude/variation/health, motor interference, offset magnitudes; current-vs-throttle correlation, board Vcc; sats, HDOP, fix availability, position jumps, glitch ERRs, the receiver's own HAcc/VAcc/SAcc accuracy estimates and fix rate from GPA; load, slow loops, free memory, internal errors | LogAnalyzer, dronekit-la, wiki, EKF3 GPS checks |
 | spectrum | local Welch PSD (scipy) of the fastest gyro source, peaks labelled in motor orders, honest about Nyquist and timing jitter | wiki FFT_SNR_REF |
 | batchfft | pre/post-filter batch-IMU spectra, order-normalised notch attenuation and placement | pymavlink mavfft_isb method |
 

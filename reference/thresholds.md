@@ -88,6 +88,16 @@ average.
 | `gps_sats` | <6 | <5 | LA `TestGPSGlitch` |
 | `gps_hdop` | >3.0 | >10.0 | LA `TestGPSGlitch` |
 | `gps_nofix_pct` | 2 % | 10 % | MEAS — a badly sited GPS in the development logs sat at **69.9 %** |
+| `gps_hacc` | 2.0 m | 5.0 m | fail: ArduPilot `AP_NavEKF3::calcGpsGoodToAlign` (`EK3_GPS_CHECK`) rejects hAcc > 5 m; warn: MEAS — `GPA.HAcc` median over 3D-fix samples. A receiver behind a bad ground plane read 4.25 m, the same receiver fixed read 0.94 then 0.64 m (issue #5) |
+| `gps_vacc` | 3.0 m | 7.5 m | fail: EKF3 rejects vAcc > 7.5 m; warn: MEAS — `GPA.VAcc` median (5.69 → 1.58 → 0.79 m across the same three flights) |
+| `gps_sacc` | 0.5 m/s | 1.0 m/s | fail: EKF3 rejects sAcc > 1.0 m/s; warn: MEAS — `GPA.SAcc` median (1.34 → 0.33 → 0.20 m/s) |
+
+`HDop` is satellite geometry; `GPA.HAcc` is the receiver's own estimate of its horizontal
+error in metres, and it is the number that answers "is the GPS better than it was". Graded
+on the median; the p95 is reported beside it for dropouts. A receiver with no 3D fix, or
+one whose driver supplies no estimate (NMEA units report `HAcc` 0 and the saturated
+`VDop` 655.35), is SKIP - 0 m is an absence, not an accuracy. `GPA.Delta` (the fix
+interval) identifies each receiver's update rate with no parameter lookup.
 
 LA also flags `ERR` Subsys 11 / ECode 2 as an outright glitch → FAIL.
 

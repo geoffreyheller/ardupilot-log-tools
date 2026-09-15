@@ -866,6 +866,7 @@ def check_gps(log, w):
                                    summary_fmt="max implied speed between fixes {v} m/s (warn {w}, fail {f})",
                                    n_over_warn=int((speed > T["gps_glitch_speed"]["warn"]).sum())))
     sec.table("gps", ["gps", "sats mean", "sats min", "HDOP mean", "HDOP max", "% no 3D fix"], rows)
+    _gps_accuracy(log, w, gps, sec)
     err = log.df("ERR")
     if not err.empty and {"Subsys", "ECode"} <= set(err.columns):
         gl = err[(err["Subsys"] == 11) & (err["ECode"] == 2)]
@@ -884,6 +885,75 @@ def check_gps(log, w):
                  "implicates a shared external emitter; one much worse than the other implicates that\n"
                  "unit (self-jam, weak front end) rather than a uniform RF problem.")
     return sec
+
+
+_GPA_SATURATED = 655.0        # GPA.VDop is a uint16 x 0.01: 655.35 means "not supplied"
+
+
+def _gps_accuracy(log, w, gps, sec):
+    """The receiver's own accuracy estimates from GPA (issue #5).
+
+    HDOP is satellite geometry; `GPA.HAcc` / `VAcc` / `SAcc` are the receiver's estimate
+    of its own horizontal, vertical and speed error in metres and m/s, and are what
+    actually answer "is the GPS better than it was". Graded on the median over samples
+    with a 3D fix; the p95 sits beside it for dropouts. Two things are SKIP rather than
+    a number: a receiver with no 3D fix in the window, and one whose driver supplies no
+    estimate at all (NMEA units report HAcc 0 and the saturated VDop) - 0 m is not an
+    accuracy, it is an absence.
+    """
+    gpa = log.instances("GPA")
+    if not gpa:
+        sec.add(Result("receiver accuracy", SKIP,
+                       "GPA not logged: HAcc/VAcc/SAcc (the receiver's own accuracy estimates) are "
+                       "unavailable, and HDOP is geometry, not accuracy"))
+        return
+    rows, rates = [], []
+    for i, a in sorted(gpa.items()):
+        aa = w.clip(a)
+        if aa is None or aa.empty:
+            continue
+        g = gps.get(i)
+        if g is not None and not g.empty and "Status" in g.columns and len(g) > 1:
+            status = np.interp(aa["t"].values, g["t"].values, g["Status"].values.astype(float))
+        else:
+            status = np.full(len(aa), 3.0)
+        fix = aa[status >= 2.5]
+        delta = int(round(float(np.nanmedian(aa["Delta"])))) if "Delta" in aa.columns and len(aa) else None
+        if delta:
+            rates.append(f"GPS{i} fix interval median {delta} ms ({1000.0 / delta:.1f} Hz)")
+        has = {c for c in ("HAcc", "VAcc", "SAcc", "VDop") if c in aa.columns}
+        reported = fix[fix["HAcc"] > 0] if "HAcc" in has and len(fix) else fix.iloc[0:0]
+        if fix.empty or reported.empty:
+            why = ("no 3D fix in the window" if fix.empty else
+                   "receiver does not report an accuracy estimate (HAcc always 0; the NMEA driver "
+                   "supplies none)")
+            vdop = "no fix" if fix.empty else "n/a"
+            rows.append([f"GPS{i}", None, None, None, None, None, None, vdop, delta, int(len(fix))])
+            for name in ("horizontal", "vertical", "speed"):
+                sec.add(Result(f"GPS{i} {name} accuracy", SKIP, why))
+            continue
+        h = describe(reported["HAcc"]) if "HAcc" in has else {}
+        v = describe(reported["VAcc"]) if "VAcc" in has else {}
+        s = describe(reported["SAcc"]) if "SAcc" in has else {}
+        vd = float(np.nanmedian(reported["VDop"])) if "VDop" in has else np.nan
+        vdop = "n/a" if not np.isfinite(vd) or vd >= _GPA_SATURATED else vd
+        rows.append([f"GPS{i}", h.get("p50"), h.get("p95"), v.get("p50"), v.get("p95"),
+                     s.get("p50"), s.get("p95"), vdop, delta, int(len(fix))])
+        for key, name, st, unit in (("gps_hacc", "horizontal", h, "m"), ("gps_vacc", "vertical", v, "m"),
+                                    ("gps_sacc", "speed", s, "m/s")):
+            if st:
+                sec.add(_grade(st.get("p50"), key, name=f"GPS{i} {name} accuracy",
+                               summary_fmt="median {v} %s (warn {w}, fail {f}); p95 %s"
+                                           % (unit, fmt(st.get("p95"))),
+                               p95=st.get("p95"), n=st.get("n")))
+    if rows:
+        sec.table("gpa", ["gps", "HAcc med (m)", "HAcc p95 (m)", "VAcc med (m)", "VAcc p95 (m)",
+                          "SAcc med (m/s)", "SAcc p95 (m/s)", "VDop med", "fix interval (ms)",
+                          "3D-fix samples"], rows)
+        sec.note("GPA.HAcc/VAcc/SAcc are the receiver's own accuracy estimates (m, m, m/s), graded on "
+                 "the median over 3D-fix samples; HDOP above is geometry only. Fail levels are the "
+                 "EKF's own GPS-check limits (5 m / 7.5 m / 1.0 m/s). "
+                 + ("Fix rate from GPA.Delta: " + "; ".join(rates) + "." if rates else ""))
 
 
 # ------------------------------------------------------------------------- CPU

@@ -125,7 +125,7 @@ the actual numbers (`xy diff:127>100`, or `1181, max 875, min 185`).
 | message | fields | notes |
 |---|---|---|
 | `GPS` | `I Status GMS GWk NSats HDop Lat Lng Alt Spd GCrs VZ Yaw U` | `Status` ≥3 is a 3D fix; 4 = SBAS/DGPS. `GCrs` is ground course. |
-| `GPA` | `I VDop HAcc VAcc SAcc YAcc VV SMS Delta AEl RTCMFU RTCMFD` | accuracy estimates in metres |
+| `GPA` | `I VDop HAcc VAcc SAcc YAcc VV SMS Delta AEl RTCMFU RTCMFD` | the receiver's own accuracy estimates: `HAcc`/`VAcc` m, `SAcc` m/s; `Delta` is the fix interval in ms (200 = 5 Hz). `VDop` is uint16 × 0.01, so 655.35 is "not supplied"; an NMEA unit reports `HAcc` 0 - an absence, not an accuracy. The `gps` check grades all three. |
 | `UBX2` | u-blox diagnostics | **emitted only by the u-blox driver** |
 
 **Identify which physical GPS an instance is by `UBX2`, never by the instance index.**

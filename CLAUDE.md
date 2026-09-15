@@ -186,7 +186,9 @@ and `--flight` explicitly when it complains; do not read the table until it stop
 - **compass, power, gps, cpu** — field magnitude and variation, motor interference as the
   throttle correlation; **battery current correlated against throttle** (a flat reading is a
   wiring or pin fault, not a calibration error — a wrong `BATT_AMP_PERVLT` changes the
-  magnitude, never the correlation); sats, HDOP, fix availability, position jumps; CPU
+  magnitude, never the correlation); sats, HDOP, fix availability, position jumps, and the
+  receiver's **own accuracy estimates** `GPA.HAcc`/`VAcc`/`SAcc` — HDOP is geometry, HAcc
+  is metres, and HAcc is what answers "is the GPS better than it was"; CPU
   load, slow loops, free memory, internal errors.
 - **spectrum** — a local Welch PSD (scipy) of the fastest gyro source with peaks labelled
   in motor orders. It states the source, its Nyquist limit and the timing jitter, and

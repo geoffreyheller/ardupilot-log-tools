@@ -25,6 +25,7 @@ except ImportError:
     import _shim as pytest
 
 from dflog import Log, airborne_window, flights, hover_chunks       # noqa: E402
+from dflog.analysis import check_gps                                  # noqa: E402
 from dflog.cli import main                                            # noqa: E402
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "largeprop-quad.bin")
@@ -95,6 +96,46 @@ def test_hover_chunks_are_found():
     assert ch[0].t0 == pytest.approx(245.1, abs=0.2) and ch[0].t1 == pytest.approx(272.1, abs=0.2)
     code, doc = run_json("hover", FIXTURE)
     assert len(doc["chunks"]) == 3
+
+
+def _results(sec):
+    return {r.name: r for r in sec.results}
+
+
+def _table(sec, name):
+    t = next((t for t in sec.tables if t["name"] == name), None)
+    assert t is not None, [t["name"] for t in sec.tables]
+    return t
+
+
+# --------------------------------------------------------------- issue #5
+
+def test_gps_accuracy_figures_from_gpa():
+    """Two receivers: GPS0 is the u-blox (UBX2 present, GPA.Delta 200 ms), GPS1 an NMEA
+    unit that spends most of the flight without a fix (VDop 655.35 = saturated)."""
+    sec = check_gps(LOG, airborne_window(LOG, method="ev"))
+    t = _table(sec, "gpa")
+    rows = {r[0]: dict(zip(t["columns"], r)) for r in t["rows"]}
+    g0 = rows["GPS0"]
+    assert g0["HAcc med (m)"] == pytest.approx(0.64, abs=0.02)
+    assert g0["HAcc p95 (m)"] == pytest.approx(1.45, abs=0.05)
+    assert g0["VAcc med (m)"] == pytest.approx(0.79, abs=0.02)
+    assert g0["SAcc med (m/s)"] == pytest.approx(0.20, abs=0.02)
+    assert g0["VDop med"] == pytest.approx(1.05, abs=0.02)
+    assert g0["fix interval (ms)"] == 200
+    rs = _results(sec)
+    assert rs["GPS0 horizontal accuracy"].status == "PASS"
+    assert rs["GPS0 vertical accuracy"].status == "PASS"
+    assert rs["GPS0 speed accuracy"].status == "PASS"
+    # GPS1 holds a 3D fix for most of the window but its NMEA driver supplies no accuracy
+    # estimate: HAcc is 0 and VDop the saturated 655.35. That is "not reported", which is
+    # a different SKIP from "no fix", and it must not be graded as 0 m.
+    g1 = rows["GPS1"]
+    assert g1["fix interval (ms)"] == 99
+    assert g1["VDop med"] == "n/a", g1
+    assert g1["HAcc med (m)"] is None
+    assert rs["GPS1 horizontal accuracy"].status == "SKIP"
+    assert "not report" in rs["GPS1 horizontal accuracy"].summary
 
 
 if __name__ == "__main__":

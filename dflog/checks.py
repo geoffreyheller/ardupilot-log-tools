@@ -78,6 +78,7 @@ LA = "ardupilot Tools/LogAnalyzer @ bdea9be7fb~1 (removed from master 2024-08-14
 DLA = "dronekit-la (unmaintained since 2022)"
 WIKI = "ardupilot.org wiki"
 MEAS = "measured on the development logs; see reference/thresholds.md"
+EKF3_GPS = "ArduPilot AP_NavEKF3 calcGpsGoodToAlign, EK3_GPS_CHECK limits"
 
 #: Threshold registry. Every check must cite one of these rather than hardcode.
 T = {
@@ -115,6 +116,13 @@ T = {
     "gps_nofix_pct":  _t(2.0, 10.0, MEAS, "percent of airborne time without a 3D fix"),
     "gps_glitch_speed": _t(30.0, 60.0, MEAS, "max implied ground speed between consecutive 3D fixes, m/s; "
                                              "a multirotor log jumping faster than this is a position glitch"),
+    # The receiver's own accuracy estimates (GPA). The fail levels are the EKF's own
+    # rejection limits in AP_NavEKF3 calcGpsGoodToAlign (EK3_GPS_CHECK): hAcc 5 m,
+    # vAcc 7.5 m, sAcc 1.0 m/s. Warn levels are measured: a badly sited receiver read
+    # HAcc 4.25 m median, a good one 0.3-0.9 m (issue #5).
+    "gps_hacc":       _t(2.0, 5.0, f"{EKF3_GPS} (fail); {MEAS} (warn)", "GPA.HAcc median over 3D-fix samples, m"),
+    "gps_vacc":       _t(3.0, 7.5, f"{EKF3_GPS} (fail); {MEAS} (warn)", "GPA.VAcc median over 3D-fix samples, m"),
+    "gps_sacc":       _t(0.5, 1.0, f"{EKF3_GPS} (fail); {MEAS} (warn)", "GPA.SAcc median over 3D-fix samples, m/s"),
 
     # --- power / CPU -----------------------------------------------------
     "vcc_min":        _t(4.7, 4.6, LA, "POWR.Vcc volts, low side"),
