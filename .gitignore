@@ -19,3 +19,6 @@ __pycache__/
 build/
 dist/
 *.egg-info/
+
+# Scrubbed, trimmed test fixtures cut from real logs by tools/make_fixture.py
+!tests/fixtures/*.bin
