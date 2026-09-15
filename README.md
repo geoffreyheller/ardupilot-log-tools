@@ -80,7 +80,8 @@ Or `pip install -e .` for an `alog` console script, or with uv: `uv venv && uv p
 python alog.py info      flight.bin                 # identity, integrity, coverage - run first
 python alog.py integrity flight.bin                 # every structural and data-quality issue
 python alog.py all       flight.bin [--json]        # the standard battery
-python alog.py motors    flight.bin --window rpm    # one check, most reproducible window
+python alog.py motors    flight.bin --window rpm    # one check; rpm = ESC-defined window
+python alog.py hover     flight.bin                 # steady-hover chunks; --window hover uses one
 python alog.py fft       flight.bin --plot fft.png  # local FFT (scipy) of the best gyro source
 python alog.py fft       flight.bin --list-sources  # every transformable signal with its Nyquist
 python alog.py compare   before.bin after.bin       # like-for-like, identical code both sides
@@ -99,9 +100,15 @@ Checks (`alog all` runs them in this order): `summary`, `integrity`, `coverage`,
 `estimates`, `compass`, `power`, `gps`, `cpu`, `spectrum`, `batchfft`. Each is also a
 subcommand.
 
-Windows: `--window auto|ev|rpm|throttle|arm|none` or an explicit `--window 120:180`
-(seconds since boot). `rpm` (fleet-mean ESC fundamental above 90 Hz) is the one to use for
-motor, notch and vibration work and for any before/after comparison.
+Windows: `--window auto|ev|rpm|throttle|arm|hover|none`, `hover:N`, or an explicit
+`--window 120:180` (seconds since boot). `rpm` is the fleet-mean ESC fundamental above a
+floor derived from the log (60 % of the spinning median, so it scales from a 5-inch quad
+hovering at 200 Hz to a 10-inch one at 84 Hz; `--hz-floor` overrides it) and is defined
+identically regardless of what the land detector believed. `hover` is one steady-hover
+chunk, for statistics that are only meaningful in hover. The `flight` check warns when the
+EV and ESC detectors disagree on how many flights the log holds, and `compare` refuses to
+call two windows comparable when they are not (different methods, durations more than 2x
+apart, or different flight indices).
 
 Flights: a log can hold more than one. The window is always **one** of them - never the
 span across the ground time between two - and the method string says which. `--flight N`
@@ -212,10 +219,11 @@ reference/
 templates/                report template
 tests/
   synthlog.py             a DataFlash writer for building malformed test logs
-  test_parser_integrity.py, test_cli.py, test_flights.py
+  test_parser_integrity.py, test_cli.py, test_flights.py, test_checks.py, test_largeprop.py
                           run anywhere, no flight data needed
   test_toolkit.py         pinned regression figures; needs LOG_DIR
 tools/bootstrap_pymavlink.py (and .sh)   vendor pymavlink when you want mavextra/mavfft_isb
+tools/make_fixture.py   cut a small, scrubbed test fixture out of a real log (tests/fixtures/)
 ```
 
 ---
@@ -239,6 +247,8 @@ JsDataflashParser behave on the same inputs.
 python tests/test_parser_integrity.py        # synthetic malformed logs: every integrity code
 python tests/test_cli.py                     # exit codes and the JSON contract
 python tests/test_flights.py                 # flight segmentation and window selection
+python tests/test_checks.py                  # the checks, on synthetic logs
+python tests/test_largeprop.py               # pinned figures on the committed large-prop fixture
 python tests/test_toolkit.py                 # pinned regression figures (skips without LOG_DIR)
 LOG_DIR=/path/to/logs python tests/test_toolkit.py
 ```

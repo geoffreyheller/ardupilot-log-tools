@@ -18,6 +18,7 @@ python alog.py info  flight.bin              # ALWAYS first: identity, integrity
 python alog.py all   flight.bin --json       # the standard battery, one JSON document
 python alog.py all   flight.bin              # the same as markdown
 python alog.py motors flight.bin --window rpm
+python alog.py hover flight.bin              # steady-hover chunks; --window hover uses one
 python alog.py fft   flight.bin --plot fft.png
 python alog.py compare before.bin after.bin  # like-for-like, identical code both sides
 python alog.py all   flight.bin --flight 2   # one flight of a log that holds several
@@ -90,14 +91,22 @@ wrong or unusable answer.
 | method | definition | when to use |
 |---|---|---|
 | `ev` (first choice under `auto`) | `EV` 28 NOT_LANDED → 18 LAND_COMPLETE | general analysis; the FC's own opinion of "flying" |
-| `rpm` | fleet-mean ESC fundamental > 90 Hz | **motor, notch and vibration work, and any before/after comparison** — defined identically regardless of what the land detector believed |
+| `rpm` | fleet-mean ESC fundamental above a floor **derived from the log**: 60 % of the median while spinning (> 20 Hz). `--hz-floor HZ` overrides it | **motor, notch and vibration work** — defined identically regardless of what the land detector believed. The method string names the floor and the median it came from |
 | `throttle` | `CTUN.ThO` > 0.15 | fallback when there is no ESC telemetry |
 | `arm` | `EV` 10 ARMED → 11 DISARMED | only when you actually want ground time included |
+| `hover`, `hover:N` | the longest (or the Nth) steady-hover chunk from `hover_chunks()`: LOITER / ALT_HOLD / POSHOLD, sticks centred, ≥ 10 s | FFT peaks, motor balance, vibration baselines — anything only meaningful in steady hover. `alog hover` lists them. Not a flight |
 | `none` | the whole log | explicitly |
-| `T0:T1` | explicit seconds since boot, e.g. `120:180` | a manoeuvre, a hover chunk, a GPS outage |
+| `T0:T1` | explicit seconds since boot, e.g. `120:180` | a manoeuvre, a GPS outage |
 
 If a method cannot be applied the window falls back to the whole log **and the method
 string says `FALLBACK`**. You can never mistake a fallback for the window you asked for.
+
+The `rpm` floor used to be a fixed 90 Hz. That was right for a 5-inch quad hovering near
+200 Hz and wrong for a 10-inch one hovering at 84 Hz, where the mask only latched in
+climbs and one flight read as five (issue #3). The derived floor lands at ~50 Hz there and
+~85 Hz on the 5-inch, so both agree with `ev`. The `flight` check emits a WARN, `flight
+detectors disagree`, whenever `ev` and `rpm` count different numbers of flights — read
+it before trusting either window, and pass `--hz-floor` if the aircraft is unusual.
 
 ### A log can hold more than one flight
 
@@ -125,13 +134,24 @@ flight. Both are keyword arguments on `flights()`, not thresholds in `checks.py:
 define a window rather than judging an aircraft.
 
 `hover_chunks(log)` finds steady LOITER / ALT_HOLD segments with the sticks centred, each
-clipped to a single flight. Use it
-(via `--window T0:T1`) when a statistic is only meaningful in steady hover — FFT peaks,
-motor balance, vibration baselines. Attitude-error standard deviations rise ~20 % on a
-livelier flight with no change to the tune at all.
+clipped to a single flight. `alog hover <log>` lists them and `--window hover` (or
+`hover:N`) analyses one. Use it when a statistic is only meaningful in steady hover — FFT
+peaks, motor balance, vibration baselines. Attitude-error standard deviations rise ~20 %
+on a livelier flight with no change to the tune at all.
 
 `--pad N` trims N seconds off each end, the cheap way to drop takeoff and landing
 transients.
+
+### Before/after comparisons
+
+`alog compare` uses the same `--window` default as everything else (`auto`), and it
+checks that the two windows are the same kind of thing before calling them comparable:
+same method, durations within 2×, the same flight index when a log holds several, no
+fallback. When they are not it says **NOT comparable**, lists why, and exits 1 (issue
+#4: it used to default to `rpm`, put a 15 s climb segment from flight 1 of 3 against a
+33 s one from flight 2 of 5, and print "every pair below is comparable" above a
+motor-headroom PASS that had flipped to FAIL on the window choice alone). Pass `--window`
+and `--flight` explicitly when it complains; do not read the table until it stops.
 
 ---
 
@@ -295,6 +315,10 @@ Full list in `reference/pitfalls.md`.
   several is a WARN. Before this was fixed the `rpm` window spanned the ground time
   between two flights and produced two confident notch FAILs that were pure window
   artefacts — `reference/pitfalls.md` has the worked example.
+- **The opposite failure: one flight read as several.** A fixed `rpm` floor above the
+  aircraft's hover fundamental turns every cruise between two climbs into a "landing". The
+  floor is now derived from the log; the `flight detectors disagree` WARN is the tell, and
+  `--hz-floor` is the override.
 - **Instance index ≠ physical device.** Which GPS is `GPS[0]` depends on SERIAL port order
   and can change between parameter snapshots. Identify a u-blox unit by the presence of
   `UBX2`, which only the u-blox driver emits.

@@ -10,17 +10,18 @@ than a PASS that moved 3× since last time.
 
 ## Not thresholds: the window-construction parameters
 
-Four numbers in `dflog/flight.py` look like thresholds and deliberately are not in `T`.
+Five numbers in `dflog/flight.py` and `dflog/cli.py` look like thresholds and deliberately are not in `T`.
 They do not judge an aircraft — nothing is graded against them and none appears in a
 verdict — they *define a window*, and putting them in the graded table would imply an
 aircraft can fail them.
 
 | name | default | what it means |
 |---|---|---|
-| `hz_floor` | 90 Hz | `--window rpm`: fleet-mean ESC fundamental above this is "airborne". On a low-KV aircraft that cruises below 5400 RPM this floor is wrong and `rpm` is the wrong method — see `reference/pitfalls.md`. |
+| `hz_floor` | derived: 0.6 × median of the fundamental while spinning (> 20 Hz) | `--window rpm`: fleet-mean ESC fundamental above this is "airborne". Lands near 0.6 × hover — below every descent, above armed idle (20–60 Hz on every aircraft seen). A fixed 90 Hz was right for a 5-inch quad hovering at 200 Hz and split a 10-inch quad's one flight into five (issue #3). `--hz-floor` overrides it; 90 reproduces the old behaviour. Falls back to 90 Hz only when nothing spins, where the answer is "no flight" anyway. Limitation: a log that is mostly armed idle with a short flight pulls the median toward idle; the `flight detectors disagree` WARN catches that. |
 | `thr_floor` | 0.15 | `--window throttle`: `CTUN.ThO` above this is "airborne" |
 | `gap_seconds` | 10 s | ground time shorter than this is a bounced landing or a dip below the floor, not a new flight. Large enough that no plausible mid-flight transient splits one flight in two, far below any real disarm / walk-out / re-arm cycle. |
 | `min_seconds` | 5 s | anything shorter is a bench spin-up, not a flight |
+| `COMPARE_DURATION_RATIO` | 2× | `alog compare`: two windows whose durations differ by more than this are not like-for-like, whatever the method (issue #4) |
 
 They are keyword arguments on `flights()` and `airborne_window()`. `alog schema`'s
 threshold table does not list them, and it should not.

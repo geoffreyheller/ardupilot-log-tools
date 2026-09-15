@@ -37,6 +37,21 @@ LOG_DIR = os.environ.get("LOG_DIR", os.path.join(
 LOG_A = os.environ.get("LOG_A", os.path.join(LOG_DIR, "1980-01-10 17-54-09.bin"))
 LOG_B = os.environ.get("LOG_B", os.path.join(LOG_DIR, "2026-09-03 19-44-48.bin"))
 
+# The large-prop aircraft of issue #3: a 10-inch quad hovering near 84 Hz. Three logs, one
+# flight each by the EV land detector. LOG_DIR_LARGE points at the directory holding them.
+LOG_DIR_LARGE = os.environ.get("LOG_DIR_LARGE", os.path.join(LOG_DIR, "large-prop"))
+LARGE_PROP_LOGS = ["2026-08-06 18-21-35.bin", "2026-09-14 18-05-20.bin", "2026-09-14 18-53-23.bin"]
+
+# The figures pinned below were measured on the `rpm` window with the fixed 90 Hz floor
+# this toolkit used before issue #3. The floor is now derived from the log (84.5 Hz on this
+# aircraft), which moves the window edges by 0.1 s and, for instance, the pitch trim by
+# 0.08 us. The pins therefore name the floor they were taken on rather than move.
+RPM_FLOOR_PINNED = 90.0
+
+
+def _rpm_window(log):
+    return airborne_window(log, method="rpm", hz_floor=RPM_FLOOR_PINNED)
+
 
 def _load(path):
     if not os.path.exists(path):
@@ -116,7 +131,7 @@ def test_field_alias_probing():
 def test_attitude_error_sd_matches_reference_a():
     """Reference: ATT roll err sd 0.413 deg, pitch 0.381 deg."""
     log = _load(LOG_A)
-    w = airborne_window(log, method="rpm")
+    w = _rpm_window(log)
     att = w.clip(log.df("ATT"))
     assert float(np.std(att["Roll"] - att["DesRoll"])) == pytest.approx(0.413, abs=0.005)
     assert float(np.std(att["Pitch"] - att["DesPitch"])) == pytest.approx(0.381, abs=0.005)
@@ -132,7 +147,7 @@ def test_standing_trim_matches_reference_a():
     figures, and `motor_channels()` for why.
     """
     log = _load(LOG_A)
-    w = airborne_window(log, method="rpm")
+    w = _rpm_window(log)
     rcou = w.clip(log.df("RCOU"))
     means = [float(rcou[f"C{i}"].mean()) for i in (1, 2, 3, 4)]
     tr = trim_decomposition(means, mix_for(1, 1, normalise=False))
@@ -152,7 +167,7 @@ def test_channel_to_motor_map_is_read_from_servo_functions():
     log = _load(LOG_A)
     p = log.params()
     assert motor_channels(p, 4) == ["C2", "C3", "C4", "C1"]
-    w = airborne_window(log, method="rpm")
+    w = _rpm_window(log)
     rcou = w.clip(log.df("RCOU"))
     means = [float(rcou[c].mean()) for c in motor_channels(p, 4)]
     tr = trim_decomposition(means, mix_for(1, 1))
@@ -172,7 +187,7 @@ def test_ekf_mag_innovation_matches_reports():
     """Reference: log A XKF4.SM max 1.560 with 6 over 1.0; log B max 1.480 with 12."""
     for path, mx, over in ((LOG_A, 1.56, 6), (LOG_B, 1.48, 12)):
         log = _load(path)
-        w = airborne_window(log, method="rpm")
+        w = _rpm_window(log)
         sec = check_ekf(log, w)
         sm = next(r for r in sec.results if r.name.endswith("SM innovation"))
         assert sm.evidence["value"] == pytest.approx(mx, abs=0.01)
@@ -183,7 +198,7 @@ def test_esc_error_rate_is_a_percentage_not_an_rpm():
     """Regression: the Err% column index shifted when RPM median was added, and the
     check silently started grading raw RPM against a 5% threshold."""
     log = _load(LOG_B)
-    w = airborne_window(log, method="rpm")
+    w = _rpm_window(log)
     sec = check_motors(log, w)
     err = next(r for r in sec.results if "DShot" in r.name)
     assert 0.0 <= err.evidence["value"] <= 100.0
@@ -192,7 +207,7 @@ def test_esc_error_rate_is_a_percentage_not_an_rpm():
 def test_rpm_spread_matches_reference_b():
     """Reference: 7.48% spread on medians."""
     log = _load(LOG_B)
-    w = airborne_window(log, method="rpm")
+    w = _rpm_window(log)
     sec = check_motors(log, w)
     spread = next(r for r in sec.results if r.name == "RPM spread")
     assert spread.evidence["value"] == pytest.approx(7.48, abs=0.05)
@@ -206,7 +221,7 @@ def test_yaw_trim_matches_reference_b():
     was really -roll. The standing torque is ~1 us; the asymmetry is thrust.
     """
     log = _load(LOG_B)
-    w = airborne_window(log, method="rpm")
+    w = _rpm_window(log)
     sec = check_motors(log, w)
     got = {r.name: r.evidence["signed"] for r in sec.results if r.name.endswith(" trim")}
     assert got["roll trim"] == pytest.approx(-25.3, abs=0.1)
@@ -217,7 +232,7 @@ def test_yaw_trim_matches_reference_b():
 def test_notch_tracking_matches_reference_b():
     """Reference: CF/fundamental p05 0.986, p95 1.013, 0.00% above 1.5x."""
     log = _load(LOG_B)
-    w = airborne_window(log, method="rpm")
+    w = _rpm_window(log)
     from dflog.analysis import check_notch
     sec = check_notch(log, w)
     mistrack = next(r for r in sec.results if "lock-on" in r.name)
@@ -227,7 +242,7 @@ def test_notch_tracking_matches_reference_b():
 def test_batch_fft_places_the_notch_on_the_fundamental():
     """Reference: deepest attenuation at order 0.996 and 2.005, ~-34.7 dB."""
     log = _load(LOG_B)
-    w = airborne_window(log, method="rpm")
+    w = _rpm_window(log)
     sec = check_batch_fft(log, w)
     placements = [r for r in sec.results if "placement" in r.name]
     assert len(placements) == 2
@@ -253,6 +268,28 @@ def test_windows_agree_within_a_couple_of_seconds():
     rpm = airborne_window(log, method="rpm")
     assert abs(ev.duration - rpm.duration) < 3.0
     assert ev.method != rpm.method       # the method string must always be reported
+    # issue #3: the derived floor on this 5-inch aircraft lands near 85 Hz - the old fixed
+    # 90 Hz was right here, and the derivation must not have changed the answer.
+    assert 80.0 < rpm.hz_floor < 90.0, rpm.hz_floor
+    assert abs(rpm.duration - _rpm_window(log).duration) < 1.0
+
+
+# ------------------------------------------------ the large-prop aircraft (issue #3)
+
+def test_large_prop_logs_are_one_flight_by_every_detector():
+    """Three logs from a 10-inch quad hovering at ~84 Hz. The EV land detector finds one
+    flight in each; the fixed 90 Hz `rpm` floor found 3, 3 and 5. The derived floor must
+    agree with EV on every one, to within the takeoff/touchdown transients."""
+    from dflog import flights
+    for name in LARGE_PROP_LOGS:
+        log = _load(os.path.join(LOG_DIR_LARGE, name))
+        ev = flights(log, method="ev")
+        rpm = flights(log, method="rpm")
+        assert len(ev) == 1, (name, [str(f) for f in ev])
+        assert len(rpm) == 1, (name, [str(f) for f in rpm])
+        assert abs(rpm[0].t0 - ev[0].t0) < 4.0 and abs(rpm[0].t1 - ev[0].t1) < 4.0, (name, ev[0], rpm[0])
+        assert 45.0 < rpm[0].hz_floor < 56.0, (name, rpm[0].hz_floor)
+        assert len(flights(log, method="rpm", hz_floor=90.0)) > 1, name     # the old failure
 
 
 if __name__ == "__main__":

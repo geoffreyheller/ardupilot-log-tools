@@ -59,7 +59,13 @@ a WARN. Read the `flights in log` line, and use `--flight all` when you want eve
 
 **Use the same window method on both sides of a comparison.** `--window rpm` is the most
 reproducible for motor and notch work because it is defined identically regardless of what
-the FC's land detector believed.
+the FC's land detector believed - provided its floor is right for the aircraft (see the
+90 Hz entry under "Added September 2026"). `alog compare` now checks that its two windows
+are the same kind of thing (same method, durations within 2x, same flight index, no
+fallback) and says **NOT comparable** and exits 1 when they are not. Before that check,
+and with `compare` defaulting to `rpm`, a large-prop pair compared a 15 s climb segment
+against a 33 s one under a sentence saying they were comparable, and a motor-headroom PASS
+flipped to FAIL on the window choice alone (issue #4).
 
 **Run both flights through identical code.** Recomputing an old number with the new script
 is cheaper than reconciling two methods later. `alog.py compare` exists for this.
@@ -254,13 +260,16 @@ worked example under "Windows and comparisons" above. Any analysis written befor
 date against a multi-flight log should be re-run: its window, and therefore every number
 in it, may have covered ground time or a single flight without saying so.
 
-**`--window rpm` is only as good as its 90 Hz floor.** On a low-KV / large-prop aircraft
+**`--window rpm` is only as good as its floor.** On a low-KV / large-prop aircraft
 that cruises below 5400 RPM the fleet-mean fundamental spends most of the flight *under*
-the floor: on `2026-08-06 18-21-35.bin` only 455 of 26,418 ESC samples clear it, in bursts
-separated by 32 s and 55 s of sub-floor flight. The segmenter correctly refuses to call
-that one contiguous flight, so `--window rpm` returns the longest burst (15 s) rather than
-the 300 s min..max span it used to. Use `--window ev` on such an aircraft, and read
-`alog info`'s flight table before trusting an `rpm` window.
+a fixed 90 Hz floor: on `2026-08-06 18-21-35.bin` only 455 of 26,418 ESC samples clear it,
+in bursts separated by 32 s and 55 s of sub-floor flight, so the segmenter reported three
+flights (five on a later log) where the EV land detector reported one. Fixed 2026-09-14
+(issue #3): the floor is derived from the log as 60 % of the spinning median - ~50 Hz on
+that aircraft, ~85 Hz on a 5-inch - and the method string names it. `--hz-floor` overrides
+it. The `flight` check now warns when `ev` and `rpm` disagree on the flight count; that
+disagreement is the signature of this failure, so read it before trusting either window.
+The committed fixture `tests/fixtures/largeprop-quad.bin` pins the fix.
 
 **A 25 Hz IMU stream cannot show a 200 Hz motor.** The standard `LOG_BITMASK` logs IMU at
 25 Hz and RATE at 10 Hz. An FFT of either is honest only below 12.5 Hz. `alog fft` says so

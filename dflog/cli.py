@@ -6,6 +6,7 @@
     alog motors    flight.bin --window rpm # one check
     alog all       flight.bin --flight 2   # one flight of a log that holds several
     alog all       flight.bin --flight all # every flight, one block each
+    alog hover     flight.bin              # steady-hover chunks; --window hover uses one
     alog fft       flight.bin --plot fft.png
     alog compare   before.bin after.bin    # like-for-like, identical code both sides
     alog types     flight.bin              # what messages this log actually contains
@@ -31,7 +32,7 @@ import sys
 
 from . import __version__
 from .parser import Log, LogIntegrityError
-from .flight import airborne_window, flights, WINDOW_METHODS
+from .flight import airborne_window, flights, hover_chunks, WINDOW_METHODS
 from .analysis import ALL_CHECKS, run, Section
 from .checks import FAIL, PASS, SKIP, WARN, T
 from .report import fmt, table
@@ -92,8 +93,16 @@ def _finite(obj):
     return obj
 
 
+_MSG_NAME = __import__("re").compile(r"^[A-Z][A-Z0-9]{1,3}$")
+
+
 def _load(path, args):
     if not os.path.exists(path):
+        if _MSG_NAME.match(path):
+            # `alog fields GPS flight.bin`: the log comes first, and blaming a missing
+            # file called GPS sends the caller looking in the wrong place (issue #10).
+            raise InputError(f"no such file: {path}. Expected `<log> <MSG>`: {path!r} looks like a "
+                             "message name, and the log path comes first")
         raise InputError(f"no such file: {path}")
     if os.path.isdir(path):
         raise InputError(f"{path} is a directory, not a log")
@@ -126,9 +135,18 @@ def _log_flights(log):
                  source=f.method.split(", flight")[0]) for f in flights(log, method="auto")]
 
 
+def _hz_floor(args):
+    v = getattr(args, "hz_floor", None)
+    if v is not None and not v > 0:
+        raise InputError(f"--hz-floor {v}: the rpm floor must be a positive frequency in Hz "
+                         "(omit it to derive one from the log)")
+    return v
+
+
 def _window(log, args, flight=None):
     try:
-        return airborne_window(log, method=args.window, pad=args.pad, flight=flight)
+        return airborne_window(log, method=args.window, pad=args.pad, flight=flight,
+                               hz_floor=_hz_floor(args))
     except ValueError as exc:
         raise InputError(str(exc))
 
@@ -267,10 +285,14 @@ def _cmd_check_all(args, names, log):
     agent keys off the presence of `per_flight` and can never mistake one flight's
     numbers for the log's.
     """
+    if args.window.startswith("hover"):
+        raise InputError("--flight all and --window hover contradict each other: a hover chunk "
+                         "is not a flight. Use --flight N with --window hover, or `alog hover` "
+                         "to list the chunks")
     if args.window == "none" or ":" in args.window:
         raise InputError(f"--flight all and --window {args.window} contradict each other: "
                          "an explicit or whole-log window already says which seconds to analyse")
-    fl = flights(log, method=args.window)
+    fl = flights(log, method=args.window, hz_floor=_hz_floor(args))
     if len(fl) < 2:
         # Nothing to spread over: fall back to the ordinary single-window report rather
         # than emitting a per_flight document with one entry that means something else.
@@ -355,6 +377,41 @@ def cmd_info(args):
         print("Flights in log: none found by any detector (ev, rpm, throttle, arm).")
     print(cov.render())
     return 0 if log.diagnostics.ok else 2
+
+
+def cmd_hover(args):
+    """Steady-hover chunks: LOITER / ALT_HOLD / POSHOLD with the sticks centred.
+
+    A statistic that is only meaningful in steady hover - an FFT peak, a motor balance,
+    a vibration baseline - is taken over one of these, via `--window hover` (the longest)
+    or `--window hover:N`. Exit 1 when the log holds none, so a script can tell.
+    """
+    log = _load(args.log, args)
+    chunks = hover_chunks(log)
+    fl = flights(log, method="auto")
+    rows = [dict(index=k, t0=c.t0, t1=c.t1, duration_s=c.duration, method=c.method,
+                 flight_index=c.index) for k, c in enumerate(chunks, 1)]
+    code = 0 if chunks else 1
+    if args.json:
+        _emit_json(_finite(_envelope("hover", log, chunks=rows, flights=_log_flights(log),
+                                     exit_code=code)))
+        return code
+    print(f"# Hover chunks - {os.path.basename(args.log)}\n")
+    if not chunks:
+        print("No hover chunk found: no LOITER / ALT_HOLD / POSHOLD segment of 10 s or more with "
+              "roll, pitch and yaw sticks within 40 us of centre"
+              + ("" if log.has("MODE") else " (MODE not logged)") + ".")
+        return code
+    print(table(["chunk", "t0 (s)", "t1 (s)", "duration (s)", "flight", "definition"],
+                [[r["index"], f"{r['t0']:.1f}", f"{r['t1']:.1f}", f"{r['duration_s']:.1f}",
+                  r["flight_index"] if r["flight_index"] is not None else "-", r["method"]] for r in rows],
+                align=["r", "r", "r", "r", "r", "l"]))
+    longest = max(rows, key=lambda r: (r["duration_s"], -r["t0"]))
+    print(f"\n{len(chunks)} chunk(s) in {len(fl)} flight(s). `--window hover` takes the longest "
+          f"(chunk {longest['index']}, {longest['t0']:.1f}-{longest['t1']:.1f} s); "
+          "`--window hover:N` takes chunk N. Whole-flight statistics mix hover with manoeuvring "
+          "and are not comparable between flights; these are.")
+    return code
 
 
 def cmd_integrity(args):
@@ -560,14 +617,26 @@ def cmd_compare(args):
         for k in rs:
             if k not in keys:
                 keys.append(k)
+    reasons = _comparability(per)
+    code = 0 if not reasons else 1
     if args.json:
         _emit_json(_finite(_envelope(
             "compare", logs=[dict(file_name=n, path=l.path, integrity=l.diagnostics.to_dict(), window=w.to_dict())
                              for n, l, w, _ in per],
-            checks=[dict(name=k, per_log=[(rs[k].to_dict() if k in rs else None) for _, _, _, rs in per]) for k in keys])))
-        return 0
+            comparable=not reasons, reasons=reasons,
+            checks=[dict(name=k, per_log=[(rs[k].to_dict() if k in rs else None) for _, _, _, rs in per]) for k in keys],
+            exit_code=code)))
+        return code
     print("# Like-for-like comparison\n")
-    print("Both logs run through identical code, so every pair below is comparable.\n")
+    if reasons:
+        print("**WARNING - the windows are NOT comparable**, so neither are the numbers below:")
+        for r in reasons:
+            print(f"- {r}")
+        print("\nThe table is printed for reference only. Pass `--window` explicitly (and "
+              "`--flight N` where a log holds several) to force like-for-like windows.\n")
+    else:
+        print("Both logs run through identical code over like-for-like windows, so every pair "
+              "below is comparable.\n")
     for name, log, w, _ in per:
         n_fl = len(w.segments) if w.segments else 1
         print(f"- **{name}**: window {w.t0:.1f}-{w.t1:.1f} s ({w.duration:.1f} s) via {w.method}"
@@ -586,7 +655,40 @@ def cmd_compare(args):
                 row.append(f"{r.status} {fmt(v)}" if v is not None else r.status)
         rows.append(row)
     print(table(["check"] + [n for n, _, _, _ in per], rows, align=["l"] + ["l"] * len(per)))
-    return 0
+    return code
+
+
+# A before/after pair is only a comparison when the two windows are the same kind of
+# thing. issue #4: `compare` defaulted to `--window rpm` and, on a large-prop pair, put a
+# 15 s climb segment from flight 1 of 3 against a 33 s one from flight 2 of 5 under a
+# sentence saying they were comparable - and a motor-headroom PASS flipped to FAIL on
+# the window choice alone.
+COMPARE_DURATION_RATIO = 2.0
+
+
+def _comparability(per):
+    """[] when every window is like-for-like, else the reasons it is not."""
+    reasons = []
+    if len(per) < 2:
+        return reasons
+    base = lambda w: w.method.split(", flight")[0]          # noqa: E731
+    first = per[0][2]
+    for name, _log, w, _ in per[1:]:
+        if base(w) != base(first):
+            reasons.append(f"window methods differ: {per[0][0]} via {first.method!r}, "
+                           f"{name} via {w.method!r}")
+        lo, hi = sorted((first.duration, w.duration))
+        if lo > 0 and hi / lo > COMPARE_DURATION_RATIO:
+            reasons.append(f"window durations differ by {hi / lo:.1f}x: {per[0][0]} {first.duration:.1f} s, "
+                           f"{name} {w.duration:.1f} s (limit {COMPARE_DURATION_RATIO:g}x)")
+        if (first.segments and len(first.segments) > 1 or w.segments and len(w.segments) > 1) \
+                and first.index != w.index:
+            reasons.append(f"different flights: {per[0][0]} is flight {first.index} of "
+                           f"{len(first.segments or [None])}, {name} is flight {w.index} of "
+                           f"{len(w.segments or [None])}")
+        if "FALLBACK" in first.method or "FALLBACK" in w.method:
+            reasons.append("at least one window is a whole-log fallback")
+    return reasons
 
 
 def cmd_fft(args):
@@ -737,7 +839,10 @@ def cmd_schema(args):
         per_flight="[{index, window, sections, verdict, exit_code}] - present INSTEAD of "
                    "`sections` under --flight all; whole-log checks are in `whole_log_sections`",
         checks=CHECK_NAMES,
-        window_methods=list(WINDOW_METHODS) + ["T0:T1"],
+        window_methods=list(WINDOW_METHODS) + ["hover:N", "T0:T1"],
+        compare="`compare` adds comparable (bool) and reasons ([str]); exit 1 when the windows "
+                "are not like-for-like (methods differ, durations more than 2x apart, different "
+                "flight indices, or a fallback window)",
         thresholds={k: dict(warn=v["warn"], fail=v["fail"], source=v["source"], note=v["note"]) for k, v in T.items()},
     )
     _emit_json(schema)
@@ -760,12 +865,17 @@ def main(argv=None):
 
     def add_window(p):
         p.add_argument("--window", default="auto", metavar="METHOD",
-                       help="airborne window: " + "|".join(WINDOW_METHODS) + " or T0:T1 seconds; "
-                            "'rpm' is the most reproducible for motor/notch work (default auto)")
+                       help="airborne window: " + "|".join(WINDOW_METHODS) + ", hover:N, or T0:T1 "
+                            "seconds (default auto). 'rpm' is defined identically regardless of "
+                            "the land detector; 'hover' is one steady-hover chunk, not a flight")
         p.add_argument("--pad", type=float, default=0.0, help="trim N seconds off each end of the window")
         p.add_argument("--flight", metavar="N|all", default=None,
                        help="which flight to analyse on a log holding more than one "
                             "(default: the longest). 'all' runs the battery once per flight")
+        p.add_argument("--hz-floor", type=float, default=None, metavar="HZ",
+                       help="ESC-fundamental floor for --window rpm (default: 60%% of the log's "
+                            "spinning median, so it scales with the aircraft; 90 reproduces the "
+                            "pre-September-2026 fixed floor)")
 
     def add_common(p):
         p.add_argument("log")
@@ -809,13 +919,13 @@ def main(argv=None):
     q.add_argument("--non-default", action="store_true", help="only parameters that differ from PARM.Default")
     q.add_argument("--grep", help="substring filter on the name")
     q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
+    q = sub.add_parser("hover", help="list the steady-hover chunks (LOITER/ALT_HOLD/POSHOLD, sticks centred)")
+    q.add_argument("log")
+    q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     q = sub.add_parser("compare", help="run the same checks over several logs")
     q.add_argument("logs", nargs="+")
     q.add_argument("--checks", help=f"comma-separated subset of: {', '.join(CHECK_NAMES)}")
-    q.add_argument("--window", default="rpm", metavar="METHOD")
-    q.add_argument("--pad", type=float, default=0.0)
-    q.add_argument("--flight", metavar="N", default=None,
-                   help="which flight to analyse in each log (default: the longest); 'all' is rejected")
+    add_window(q)
     q.add_argument("--raw-factors", action="store_true")
     q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     q = sub.add_parser("fft", help="local FFT (scipy) of a logged signal, peaks labelled in motor orders")
@@ -849,10 +959,12 @@ def main(argv=None):
         args.flight = None
     if not hasattr(args, "raw_factors"):
         args.raw_factors = False
+    if not hasattr(args, "hz_floor"):
+        args.hz_floor = None
 
     dispatch = {"info": cmd_info, "integrity": cmd_integrity, "types": cmd_types, "fields": cmd_fields,
                 "dump": cmd_dump, "params": cmd_params, "compare": cmd_compare, "fft": cmd_fft,
-                "files": cmd_files, "schema": cmd_schema}
+                "files": cmd_files, "schema": cmd_schema, "hover": cmd_hover}
     try:
         if args.cmd in dispatch:
             return dispatch[args.cmd](args)

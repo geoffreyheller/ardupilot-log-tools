@@ -59,8 +59,10 @@ not break.
 
 - One change per flight. A comparison is only trustworthy when one thing moved.
 - Quote the window and the method - and the flight, on a log that holds more than one.
-  Use `--window rpm` for motor, notch and vibration work and for every before/after
-  comparison.
+  Use `--window rpm` for motor, notch and vibration work; its floor is derived from the
+  log and the method string names it. Read the `flight detectors disagree` WARN before
+  trusting any window. A before/after comparison uses the same method on both sides, and
+  `compare` says so - or says NOT comparable and exits 1 - before printing a table.
 - Report what you were not asked about when it is worse than what you were asked about.
 - A recommendation names its validation flight: what to fly and what to measure.
 - Never carry conclusions between aircraft. Read the aircraft's own notes first.
@@ -73,12 +75,17 @@ not break.
 
 ## 5. Changing the tools.
 
-- Run all four test files before and after: `tests/test_toolkit.py` (pinned regression
+- Run all six test files before and after: `tests/test_toolkit.py` (pinned regression
   figures on the reference logs, skipped when `LOG_DIR` is unset),
   `tests/test_parser_integrity.py` (synthetic malformed logs, every integrity code),
-  `tests/test_cli.py` (exit codes and JSON contract) and `tests/test_flights.py`
-  (flight segmentation and window selection). A change that makes a pinned figure
-  move is wrong until proven otherwise.
+  `tests/test_cli.py` (exit codes and JSON contract), `tests/test_flights.py`
+  (flight segmentation and window selection), `tests/test_checks.py` (the checks on
+  synthetic logs) and `tests/test_largeprop.py` (pinned figures on the committed,
+  scrubbed large-prop fixture). A change that makes a pinned figure move is wrong until
+  proven otherwise.
+- A fixture cut from a real log goes through `tools/make_fixture.py`, which relocates
+  every position, zeroes the MCU serial and drops every MSG text not on its allow-list.
+  Review the MSG list it prints before committing.
 - A new integrity condition gets a code, a severity, a test that triggers it, and a line in
   `reference/integrity-codes.md`.
 - A new check is a `check_*(log, window) -> Section` in `dflog/analysis.py`, registered in

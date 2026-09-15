@@ -31,6 +31,13 @@ check list and threshold table. Non-finite floats are `null`. Bytes are Latin-1 
 `log` is absent for `schema`; `window` and `flights` are present only when a window was
 used.
 
+`window.hz_floor` is present when the `rpm` detector chose the window: the
+ESC-fundamental floor it used, derived from the log (60 % of the spinning median) unless
+`--hz-floor` was given. The method string then reads
+`ESC fundamental > 50.3 Hz (60% of the spinning median 83.8 Hz)`; with an explicit floor it
+is the old `ESC fundamental > 90 Hz`. `--window hover` windows read
+`hover chunk 2 of 3: mode LOITER, sticks centred` and carry no `n_flights`.
+
 `flights` is **every flight the log holds**, not just the one analysed. A log can hold
 more than one - take off, land, disarm, re-arm, take off again - and `window` is always
 exactly one of them, never the span across the ground time between two. `window.method`
@@ -113,7 +120,8 @@ or one comparison table of two disjoint flights is not a thing.
 | `fields MSG` | `message`, `format` (the FMT), `count`, `rate_hz`, `instance_field`, `fields: [{name, type, unit, mult, range}]` |
 | `dump MSG` | `message`, `n`, `rows: [ {field: value} ]` |
 | `params` | `n`, `params: {name: {value, default}}`, `changes: [{t, name, old, new}]`; with `--diff`: `diff_file`, `unparsed_lines`, `differences: [{name, in_log, in_file, note}]` |
-| `compare` | `logs: [{file_name, path, integrity, window}]`, `checks: [{name, per_log: [result or null]}]`; `--flight N` applies to every log, `--flight all` is rejected |
+| `compare` | `logs: [{file_name, path, integrity, window}]`, `comparable` (bool), `reasons: [str]` (why not), `checks: [{name, per_log: [result or null]}]`, `exit_code` (1 when not comparable); `--flight N` applies to every log, `--flight all` is rejected |
+| `hover` | `chunks: [{index, t0, t1, duration_s, method, flight_index}]`, `flights`; exit 1 when the log holds no hover chunk |
 | `fft` | `fft: {source, fs_hz, band_hz, timing, esc_fundamental_hz, peaks: {axis: [{freq_hz, psd, db_above_floor, prominence_db, order}]}, warnings, spectrum (with --spectrum), plot, csv}`; with `--list-sources`: `sources` |
 | `files` | `files: [{name, bytes}]`, `written: [path]` |
 | `schema` | `exit_codes`, `result`, `section`, `integrity`, `window`, `flights`, `per_flight`, `checks`, `window_methods`, `thresholds` |

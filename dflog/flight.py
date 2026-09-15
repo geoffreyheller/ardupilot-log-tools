@@ -22,7 +22,8 @@ import numpy as np
 
 __all__ = ["EVENTS", "MODES", "MODES_BY_VEHICLE", "MODE_REASONS", "airborne_window",
            "arm_window", "flights", "mode_timeline", "events", "esc_fundamental", "Window",
-           "hover_chunks", "WINDOW_METHODS", "GAP_SECONDS", "MIN_SECONDS"]
+           "hover_chunks", "derive_hz_floor", "motors_stopped", "WINDOW_METHODS",
+           "GAP_SECONDS", "MIN_SECONDS", "HZ_FLOOR_FRACTION", "HZ_SPINNING", "HZ_FLOOR_DEFAULT"]
 
 # ArduPilot LogEvent ids (libraries/AP_Logger/AP_Logger.h, enum class LogEvent).
 EVENTS = {
@@ -105,15 +106,16 @@ MODE_REASONS = {
     54: "FIXED_WING_AUTOLAND", 55: "FENCE_REENABLE",
 }
 
-WINDOW_METHODS = ("auto", "ev", "rpm", "throttle", "arm", "none")
+WINDOW_METHODS = ("auto", "ev", "rpm", "throttle", "arm", "hover", "none")
 
 
 class Window:
     """A time window, plus a record of how it was chosen."""
 
-    __slots__ = ("t0", "t1", "method", "note", "index", "segments", "scope")
+    __slots__ = ("t0", "t1", "method", "note", "index", "segments", "scope", "hz_floor")
 
-    def __init__(self, t0, t1, method, note="", index=None, segments=None, scope=None):
+    def __init__(self, t0, t1, method, note="", index=None, segments=None, scope=None,
+                 hz_floor=None):
         self.t0, self.t1 = float(t0), float(t1)
         self.method, self.note = method, note
         # Which flight this is, and what else the log holds. `index` is 1-based, or None
@@ -122,6 +124,9 @@ class Window:
         # `scope` is "all" when the caller is analysing every flight in turn, so a check
         # can tell "one of two" from "both, one at a time".
         self.index, self.segments, self.scope = index, segments, scope
+        # The ESC-fundamental floor the `rpm` detector used (derived or given), so a check
+        # that re-runs the detector can use the same one. None for the other methods.
+        self.hz_floor = hz_floor
 
     @property
     def duration(self):
@@ -142,6 +147,8 @@ class Window:
         if self.segments is not None:
             d["n_flights"] = len(self.segments)
             d["flight_index"] = self.index
+        if self.hz_floor is not None:
+            d["hz_floor"] = self.hz_floor
         return d
 
     def __repr__(self):
@@ -199,6 +206,41 @@ def esc_fundamental(log, t=None):
     return t, np.mean(series, axis=0)
 
 
+def motors_stopped(log, t, params=None):
+    """Boolean mask over times `t`: every motor provably stopped.
+
+    "Provably" means every ESC instance reports RPM == 0 *and* every motor output sits at
+    its SERVO minimum. A sample that passes is one where the pack is feeding nothing but
+    the avionics, which is what a current-sensor zero-offset measurement needs (issue #6).
+    Returns an all-False mask when the log carries neither ESC nor RCOU evidence, so a
+    caller can never mistake "no evidence" for "spinning".
+    """
+    t = np.asarray(t, dtype=float)
+    mask = np.ones(t.size, dtype=bool)
+    found = False
+    inst = log.instances("ESC")
+    for v in inst.values():
+        if "RPM" not in v.columns or len(v) < 2:
+            continue
+        rpm = np.interp(t, v["t"].values, v["RPM"].values)
+        mask &= rpm <= 0.0
+        found = True
+    rcou = log.df("RCOU")
+    if not rcou.empty:
+        from .frames import motor_channels
+        p = params if params is not None else log.params()
+        n = len(inst) or 4
+        chans = motor_channels(p, n) or [f"C{i + 1}" for i in range(n)]
+        for c in chans:
+            if c not in rcou.columns:
+                continue
+            lo = float(p.get(f"SERVO{c[1:]}_MIN", 1000.0))
+            out = np.interp(t, rcou["t"].values, rcou[c].values)
+            mask &= out <= lo + 1.0
+            found = True
+    return mask if found else np.zeros(t.size, dtype=bool)
+
+
 # --------------------------------------------------------------- segmentation
 #
 # A log can hold more than one flight: take off, land, disarm, walk out, re-arm,
@@ -217,6 +259,34 @@ def esc_fundamental(log, t=None):
 # rather than in checks.py::T. See reference/thresholds.md.
 GAP_SECONDS = 10.0      # ground time below this is a bounce or a dip, not a new flight
 MIN_SECONDS = 5.0       # anything shorter is a bench spin-up, not a flight
+
+# The `rpm` detector's floor is derived from the log unless the caller gives one: a fixed
+# 90 Hz was right for a 5-inch quad hovering near 200 Hz and wrong for a 10-inch one
+# hovering at 84 Hz, where it split one flight into five (issue #3). "Spinning" samples
+# are those above HZ_SPINNING (a stopped motor reads 0; armed idle on the ground sits at
+# 20-60 Hz on every aircraft seen); the floor is HZ_FLOOR_FRACTION of their median, which
+# lands near 0.6 x hover: below every descent, above every idle. HZ_FLOOR_DEFAULT is used
+# only when nothing spins at all, and then the outcome is "no flight" whatever the floor.
+HZ_FLOOR_FRACTION = 0.6
+HZ_SPINNING = 20.0
+HZ_FLOOR_DEFAULT = 90.0
+
+
+def derive_hz_floor(log, fraction=HZ_FLOOR_FRACTION, spinning_hz=HZ_SPINNING,
+                    default=HZ_FLOOR_DEFAULT):
+    """(floor_hz, spinning_median_hz) for the `rpm` detector on this log.
+
+    The median is None when the log has no ESC telemetry or nothing ever spun above
+    `spinning_hz`; the floor is then `default`.
+    """
+    t, hz = esc_fundamental(log)
+    if hz is None:
+        return default, None
+    spin = hz[np.isfinite(hz) & (hz > spinning_hz)]
+    if spin.size < 10:
+        return default, None
+    med = float(np.median(spin))
+    return fraction * med, med
 
 
 def _coalesce(segs, gap_seconds, min_seconds):
@@ -318,18 +388,25 @@ def _segments(log, method, hz_floor, thr_floor, gap_seconds, min_seconds):
     return None
 
 
-def _describe(log, method, hz_floor, thr_floor):
+def _describe(log, method, hz_floor, thr_floor, spin_median=None):
     """(method string, note) for a detector.
 
     These strings are what this tool has always printed. They appear in pinned
     assertions, in reference/json-output.md and in every report anyone has already
-    written, so they do not change.
+    written, so they do not change - with one amendment (issue #3): when the `rpm` floor
+    was derived from the log rather than given, the string says so and names the median
+    it came from, because a reader must be able to tell "> 50.3 Hz" on a 10-inch quad
+    from "> 90 Hz" on a 5-inch one without knowing the toolkit version. An explicit
+    `hz_floor` still prints exactly the old string.
     """
     if method == "ev":
         return "EV NOT_LANDED->LAND_COMPLETE", ""
     if method == "arm":
         return "EV ARMED->DISARMED", ""
     if method == "rpm":
+        if spin_median is not None:
+            return (f"ESC fundamental > {hz_floor:.1f} Hz ({HZ_FLOOR_FRACTION * 100:.0f}% of the "
+                    f"spinning median {spin_median:.1f} Hz)"), "same definition regardless of land-detector state"
         return f"ESC fundamental > {hz_floor:g} Hz", "same definition regardless of land-detector state"
     if method == "throttle":
         col = "ThO" if "ThO" in log.df("CTUN").columns else "ThrOut"
@@ -337,7 +414,7 @@ def _describe(log, method, hz_floor, thr_floor):
     return method, ""
 
 
-def flights(log, method="auto", hz_floor=90.0, thr_floor=0.15,
+def flights(log, method="auto", hz_floor=None, thr_floor=0.15,
             min_seconds=MIN_SECONDS, gap_seconds=GAP_SECONDS):
     """Every flight segment in the log, in time order, as a list of Window.
 
@@ -351,21 +428,28 @@ def flights(log, method="auto", hz_floor=90.0, thr_floor=0.15,
     finds anything; the rest select one detector. Returns [] when the requested detector
     cannot be applied at all - that is a fallback, and the caller must say so.
 
+    `hz_floor` is the `rpm` detector's floor in Hz. None (the default) derives it from
+    the log - see `derive_hz_floor()` - and the method string then names the derivation;
+    a number is used as given and printed as given.
+
     `gap_seconds` is the load-bearing parameter: ground time shorter than this is a
     bounced landing or a mid-flight dip below the detector's floor, not a new flight.
     """
     order = ["ev", "rpm", "throttle", "arm"] if method == "auto" else [method]
     for m in order:
-        segs = _segments(log, m, hz_floor, thr_floor, gap_seconds, min_seconds)
+        floor, spin_median = hz_floor, None
+        if m == "rpm" and hz_floor is None:
+            floor, spin_median = derive_hz_floor(log)
+        segs = _segments(log, m, floor, thr_floor, gap_seconds, min_seconds)
         if not segs:
             continue
-        base, note = _describe(log, m, hz_floor, thr_floor)
+        base, note = _describe(log, m, floor, thr_floor, spin_median)
         spans = [(t0, t1) for t0, t1, _n in segs]
         out = []
         for k, (t0, t1, seg_note) in enumerate(segs, 1):
             meth = base if len(segs) == 1 else f"{base}, flight {k} of {len(segs)}"
             out.append(Window(t0, t1, meth, "; ".join(x for x in (note, seg_note) if x),
-                              index=k, segments=spans))
+                              index=k, segments=spans, hz_floor=floor if m == "rpm" else None))
         return out
     return []
 
@@ -388,17 +472,55 @@ def arm_window(log):
     return Window(lo, hi, "whole log (no ARMED event)")
 
 
-def airborne_window(log, method="auto", hz_floor=90.0, thr_floor=0.15, pad=0.0, flight=None):
+def _hover_window(log, method, lo, hi, flight, pad):
+    """`--window hover` / `hover:N`: one steady-hover chunk, the longest by default."""
+    chunks = hover_chunks(log)
+    want = None
+    if ":" in method:
+        _, k = method.split(":", 1)
+        try:
+            want = int(k)
+        except ValueError:
+            raise ValueError(f"window {method!r}: expected hover or hover:N")
+    if flight is not None and chunks:
+        fl = flights(log)
+        if not 1 <= flight <= len(fl):
+            raise ValueError(f"flight {flight!r}: this log has {len(fl)} flight(s)")
+        f = fl[flight - 1]
+        chunks = [c for c in chunks if c.t0 >= f.t0 - 0.5 and c.t1 <= f.t1 + 0.5]
+    if not chunks:
+        return Window(lo, hi, "whole log (FALLBACK: method 'hover' found no hover chunk)")
+    if want is None:
+        c = max(chunks, key=lambda x: (x.duration, -x.t0))
+        k = chunks.index(c) + 1
+    elif not 1 <= want <= len(chunks):
+        raise ValueError(f"hover chunk {want}: this log has {len(chunks)} hover chunk(s) ("
+                         + ", ".join(f"{x.t0:.1f}-{x.t1:.1f} s" for x in chunks) + ")")
+    else:
+        c, k = chunks[want - 1], want
+    w = Window(c.t0, c.t1, f"hover chunk {k} of {len(chunks)}: {c.method}",
+               "steady hover only; not a whole flight")
+    if pad:
+        if 2 * pad >= w.duration:
+            raise ValueError(f"pad {pad}s removes the whole {w.duration:.1f}s window")
+        w = Window(w.t0 + pad, w.t1 - pad, w.method, w.note + f"; padded {pad}s each end")
+    return w
+
+
+def airborne_window(log, method="auto", hz_floor=None, thr_floor=0.15, pad=0.0, flight=None):
     """Best available airborne window: one flight, and a record of how it was chosen.
 
     method:
       "auto"  - try ev, then rpm, then throttle, then arm
       "ev"    - EV NOT_LANDED (28) .. LAND_COMPLETE (18). Most authoritative.
-      "rpm"   - fleet-mean ESC fundamental above `hz_floor`. Use when comparing
-                flights on motor/notch metrics: it is defined identically
+      "rpm"   - fleet-mean ESC fundamental above `hz_floor`, which is derived from the
+                log (60 % of the spinning median) unless given. Defined identically
                 regardless of what the FC's land detector believed.
       "arm"   - EV ARMED .. DISARMED (includes ground time; rarely what you want)
       "throttle" - CTUN.ThO above `thr_floor`
+      "hover" - the longest steady-hover chunk (LOITER/ALT_HOLD/POSHOLD, sticks centred);
+                "hover:N" picks chunk N. See `hover_chunks()`. Not a flight: a statistic
+                that is only meaningful in steady hover is taken here.
       "none"  - the whole log
       "T0:T1" - explicit seconds since boot, e.g. "120:180"
 
@@ -418,6 +540,8 @@ def airborne_window(log, method="auto", hz_floor=90.0, thr_floor=0.15, pad=0.0, 
     lo, hi = log.duration()
     if lo is None:
         return Window(0.0, 0.0, "no timestamped messages in log")
+    if isinstance(method, str) and (method == "hover" or method.startswith("hover:")):
+        return _hover_window(log, method, lo, hi, flight, pad)
     if isinstance(method, str) and ":" in method:
         if flight is not None:
             raise ValueError(f"window {method!r} and flight {flight!r} contradict each other: "
@@ -450,7 +574,7 @@ def airborne_window(log, method="auto", hz_floor=90.0, thr_floor=0.15, pad=0.0, 
                 if 2 * pad >= w.duration:
                     raise ValueError(f"pad {pad}s removes the whole {w.duration:.1f}s window")
                 w = Window(w.t0 + pad, w.t1 - pad, w.method, f"padded {pad}s each end",
-                           index=w.index, segments=w.segments)
+                           index=w.index, segments=w.segments, hz_floor=w.hz_floor)
             return w
     if flight is not None:
         raise ValueError(f"flight {flight!r}: this log has 0 flight(s) that method {method!r} "
@@ -472,6 +596,10 @@ def hover_chunks(log, min_seconds=10.0, rc_quiet=True, modes=("LOITER", "ALT_HOL
     Chunks are clipped to a single flight. A mode that never changes across a landing
     would otherwise yield one "hover" chunk covering two flights and the ground time
     between them, which is exactly the window error this module exists to prevent.
+
+    Each returned Window carries `index` = the 1-based flight it lies in (None when the
+    log's flights are unknown), so a listing can say which flight a chunk belongs to.
+    `--window hover` on the CLI and `airborne_window(log, "hover")` select one of these.
     """
     tl = mode_timeline(log)
     if not tl:
@@ -483,20 +611,20 @@ def hover_chunks(log, min_seconds=10.0, rc_quiet=True, modes=("LOITER", "ALT_HOL
         t_end = tl[i + 1][0] if i + 1 < len(tl) else end
         if name not in modes:
             continue
-        for a, b in ([(t, t_end)] if not fl else
-                     [(max(t, f.t0), min(t_end, f.t1)) for f in fl]):
+        for a, b, fi in ([(t, t_end, None)] if not fl else
+                         [(max(t, f.t0), min(t_end, f.t1), f.index) for f in fl]):
             if (b - a) >= min_seconds:
-                spans.append((a, b, name))
+                spans.append((a, b, name, fi))
     if not spans:
         return []
     if not rc_quiet:
-        return [Window(a, b, f"mode {m} >= {min_seconds:g}s") for a, b, m in spans]
+        return [Window(a, b, f"mode {m} >= {min_seconds:g}s", index=fi) for a, b, m, fi in spans]
 
     rcin = log.df("RCIN")
     out = []
-    for a, b, m in spans:
+    for a, b, m, fi in spans:
         if rcin.empty:
-            out.append(Window(a, b, f"mode {m} >= {min_seconds:g}s (RC not logged)"))
+            out.append(Window(a, b, f"mode {m} >= {min_seconds:g}s (RC not logged)", index=fi))
             continue
         seg = rcin[(rcin["t"] >= a) & (rcin["t"] <= b)]
         quiet = np.ones(len(seg), dtype=bool)
@@ -513,5 +641,5 @@ def hover_chunks(log, min_seconds=10.0, rc_quiet=True, modes=("LOITER", "ALT_HOL
                 continue
             t0, t1 = t[run[0]], t[run[-1]]
             if t1 - t0 >= min_seconds:
-                out.append(Window(t0, t1, f"mode {m}, sticks centred"))
+                out.append(Window(t0, t1, f"mode {m}, sticks centred", index=fi))
     return out

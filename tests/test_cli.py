@@ -33,8 +33,14 @@ with open(os.path.join(TMP, "prose.txt"), "w") as _fh:
 PROSE = os.path.join(TMP, "prose.txt")
 
 
-def _two_flight_log(path, spans=((10.0, 60.0), (120.0, 170.0)), span=180.0, hz=10.0):
-    """A log holding two flights with 60 s of ground time between them (issue #1)."""
+def _two_flight_log(path, spans=((10.0, 60.0), (120.0, 170.0)), span=180.0, hz=10.0,
+                    rpm=8400.0, climbs=(), rpm_climb=6000.0, ev_spans=None, modes=()):
+    """A log holding two flights with 60 s of ground time between them (issue #1).
+
+    `rpm`/`climbs`/`rpm_climb` shape the ESC stream (issue #3: a large-prop aircraft
+    cruises below a fixed 90 Hz floor and only clears it in climbs); `ev_spans` lets the
+    EV stream disagree with it; `modes` is [(t, mode_num)] for hover chunks (issue #10).
+    """
     w = LogWriter()
     w.fmt(96, "PARM", "QNff", "TimeUS,Name,Value,Default")
     w.fmt(97, "MSG", "QZ", "TimeUS,Message")
@@ -42,26 +48,43 @@ def _two_flight_log(path, spans=((10.0, 60.0), (120.0, 170.0)), span=180.0, hz=1
     w.fmt(202, "ESC", "QBff", "TimeUS,Instance,RPM,Volt")
     w.fmt(203, "CTUN", "Qf", "TimeUS,ThO")
     w.fmt(204, "ARM", "QBBH", "TimeUS,ArmState,ArmChecks,Forced")
+    w.fmt(205, "MODE", "QBBB", "TimeUS,ModeNum,Rsn,ThrCrs")
+    w.fmt(206, "RCIN", "QHHHH", "TimeUS,C1,C2,C3,C4")
     w.msg("MSG", TimeUS=20, Message="ArduCopter V4.7.1 (deadbeef)")
     w.msg("PARM", TimeUS=30, Name="FRAME_CLASS", Value=1.0, Default=1.0)
     w.msg("PARM", TimeUS=31, Name="FRAME_TYPE", Value=1.0, Default=1.0)
-    for t0, t1 in spans:
+    for t0, t1 in (spans if ev_spans is None else ev_spans):
         w.msg("EV", TimeUS=int(t0 * 1e6), Id=28)
         w.msg("EV", TimeUS=int(t1 * 1e6), Id=18)
         w.msg("EV", TimeUS=int((t0 - 5) * 1e6), Id=10)
         w.msg("ARM", TimeUS=int((t0 - 5) * 1e6), ArmState=1, ArmChecks=0, Forced=0)
         w.msg("EV", TimeUS=int((t1 + 5) * 1e6), Id=11)
         w.msg("ARM", TimeUS=int((t1 + 5) * 1e6), ArmState=0, ArmChecks=0, Forced=0)
+    for t, num in modes:
+        w.msg("MODE", TimeUS=int(t * 1e6), ModeNum=num, Rsn=1, ThrCrs=0)
     for i in range(int(span * hz)):
         t = i / hz
         up = any(a <= t <= b for a, b in spans)
+        r = 0.0 if not up else (rpm_climb if any(a <= t <= b for a, b in climbs) else rpm)
         for inst in range(4):
-            w.msg("ESC", TimeUS=int(t * 1e6), Instance=inst, RPM=8400.0 if up else 0.0, Volt=7.8)
+            w.msg("ESC", TimeUS=int(t * 1e6), Instance=inst, RPM=r, Volt=7.8)
         w.msg("CTUN", TimeUS=int(t * 1e6), ThO=0.5 if up else 0.0)
+        if modes:
+            w.msg("RCIN", TimeUS=int(t * 1e6), C1=1500, C2=1500, C3=1500, C4=1500)
     return w.write(path)
 
 
 TWO_FLIGHTS = _two_flight_log(os.path.join(TMP, "two_flights.bin"))
+# One 160 s flight at 84 Hz (5040 RPM) with three climbs to 100 Hz: the large-prop case of
+# issue #3, where a fixed 90 Hz floor reads three flights.
+LARGE_PROP = _two_flight_log(os.path.join(TMP, "large_prop.bin"), spans=((10.0, 170.0),),
+                             rpm=5040.0, climbs=((12.0, 30.0), (70.0, 90.0), (140.0, 150.0)))
+# EV reports two flights, the ESC stream one (motors kept spinning through the "landing").
+DISAGREE = _two_flight_log(os.path.join(TMP, "disagree.bin"), spans=((10.0, 170.0),),
+                           ev_spans=((10.0, 60.0), (120.0, 170.0)))
+# One flight with two LOITER hover chunks, 40-60 s and 100-150 s, sticks centred.
+HOVER = _two_flight_log(os.path.join(TMP, "hover.bin"), spans=((10.0, 170.0),),
+                        modes=((5.0, 0), (40.0, 5), (60.0, 0), (100.0, 5), (150.0, 0)))
 
 
 def run(*argv):
@@ -358,6 +381,112 @@ def test_single_flight_log_says_one_flight_and_does_not_warn():
     if "flights in log" in rs:
         assert rs["flights in log"]["status"] in ("PASS", "SKIP")
     assert "flight 1 of 1" not in doc["window"]["method"]
+
+
+# --------------------------------------------------- the rpm floor (issue #3)
+
+def test_rpm_window_default_floor_scales_to_the_aircraft():
+    """A 10-inch quad cruising at 84 Hz is one flight, not three, and the method string
+    says what floor was used and where it came from."""
+    code, doc = run_json("flight", LARGE_PROP, "--window", "rpm")
+    assert len(doc["flights"]) == 1, doc["flights"]
+    assert doc["window"]["t0"] == pytest.approx(10.0, abs=0.2)
+    assert doc["window"]["t1"] == pytest.approx(170.0, abs=0.2)
+    assert doc["window"]["method"].startswith("ESC fundamental > 50.")
+    assert "spinning median" in doc["window"]["method"]
+    rs = {r["name"]: r for s in doc["sections"] for r in s["results"]}
+    assert rs["flights in log"]["status"] == "PASS"
+
+
+def test_hz_floor_flag_is_exposed_and_reproduces_the_old_floor():
+    code, doc = run_json("flight", LARGE_PROP, "--window", "rpm", "--hz-floor", "90")
+    assert doc["window"]["method"].startswith("ESC fundamental > 90 Hz"), doc["window"]["method"]
+    assert doc["window"]["n_flights"] == 3
+    code, out, err = run("flight", LARGE_PROP, "--window", "rpm", "--hz-floor", "-5")
+    assert code == 3 and "hz-floor" in err
+
+
+def test_detector_disagreement_on_flight_count_is_a_warn():
+    """When `ev` and `rpm` count different numbers of flights, that is the signature of a
+    mis-set floor (or a land detector that fired in the air) and must be said out loud."""
+    code, doc = run_json("flight", DISAGREE)
+    rs = {r["name"]: r for s in doc["sections"] for r in s["results"]}
+    assert "flight detectors disagree" in rs, sorted(rs)
+    r = rs["flight detectors disagree"]
+    assert r["status"] == "WARN"
+    assert r["evidence"]["ev"] == 2 and r["evidence"]["rpm"] == 1
+    assert "--hz-floor" in r["summary"] or "hz_floor" in r["summary"]
+    # and no such result on a log where they agree
+    code, doc = run_json("flight", LARGE_PROP)
+    rs = {r["name"]: r for s in doc["sections"] for r in s["results"]}
+    assert "flight detectors disagree" not in rs
+
+
+# ------------------------------------------------ compare's window (issue #4)
+
+def test_compare_defaults_to_the_auto_window():
+    """`compare` used to default to `--window rpm` while every other command defaulted to
+    auto. On a large-prop pair that compared two climb segments as if they were flights."""
+    code, doc = run_json("compare", LARGE_PROP, LARGE_PROP, "--checks", "flight")
+    for lg in doc["logs"]:
+        assert lg["window"]["method"] == "EV NOT_LANDED->LAND_COMPLETE", lg["window"]["method"]
+    assert doc["comparable"] is True
+    assert code == 0
+
+
+def test_compare_warns_when_the_windows_are_not_like_for_like():
+    """Two windows more than 2x apart in duration, or from different flight indices, or
+    chosen by different methods, are not comparable and the report must not claim they
+    are. Exit code 1 says so to a script."""
+    code, doc = run_json("compare", TWO_FLIGHTS, LARGE_PROP, "--checks", "flight")
+    assert doc["comparable"] is False, doc.get("comparable")
+    assert doc["reasons"], doc
+    assert code == 1
+    code, out, err = run("compare", TWO_FLIGHTS, LARGE_PROP, "--checks", "flight")
+    assert "NOT comparable" in out and "identical code" not in out.split("|")[0], out[:600]
+    assert "50.0 s" in out and "160.0 s" in out
+    # like-for-like: same window on both sides, and the reassurance is back
+    code, out, err = run("compare", LARGE_PROP, LARGE_PROP, "--checks", "flight")
+    assert "every pair below is comparable" in out and code == 0
+
+
+# ------------------------------------------------- hover chunks on the CLI (issue #10)
+
+def test_hover_command_lists_the_chunks():
+    code, doc = run_json("hover", HOVER)
+    assert code == 0
+    ch = doc["chunks"]
+    assert len(ch) == 2, ch
+    assert ch[0]["t0"] == pytest.approx(40.0, abs=0.2) and ch[0]["t1"] == pytest.approx(60.0, abs=0.2)
+    assert ch[1]["t0"] == pytest.approx(100.0, abs=0.2) and ch[1]["t1"] == pytest.approx(150.0, abs=0.2)
+    assert all("LOITER" in c["method"] for c in ch)
+    assert all(c["flight_index"] == 1 for c in ch)
+    code, out, err = run("hover", HOVER)
+    assert "40.0" in out and "150.0" in out and "--window hover" in out
+    code, out, err = run("hover", LARGE_PROP)
+    assert code == 1 and "no hover chunk" in out.lower()
+
+
+def test_hover_window_method_on_the_cli():
+    code, doc = run_json("flight", HOVER, "--window", "hover")
+    assert doc["window"]["t0"] == pytest.approx(100.0, abs=0.2)
+    assert doc["window"]["t1"] == pytest.approx(150.0, abs=0.2)
+    assert doc["window"]["method"].startswith("hover chunk 2 of 2")
+    code, doc = run_json("flight", HOVER, "--window", "hover:1")
+    assert doc["window"]["t0"] == pytest.approx(40.0, abs=0.2)
+    code, out, err = run("flight", HOVER, "--window", "hover:3")
+    assert code == 3 and "2" in err
+    code, out, err = run("all", HOVER, "--window", "hover", "--flight", "all")
+    assert code == 3 and "hover" in err
+
+
+# -------------------------------------------- argument-order mistakes (issue #10)
+
+def test_fields_with_the_arguments_swapped_says_so():
+    code, out, err = run("fields", "GPS", GOOD)
+    assert code == 3 and "GPS" in err and "looks like a message name" in err and "<log> <MSG>" in err
+    code, out, err = run("dump", "ATT", GOOD)
+    assert code == 3 and "looks like a message name" in err
 
 
 def test_json_flag_position_is_flexible():

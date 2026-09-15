@@ -1015,6 +1015,25 @@ def check_flight(log, w):
                              "or --flight all for every one.",
                            evidence=dict(n_flights=len(fl), analysed=covered, flight_index=this,
                                          flights=sec.data["flights"]), source=source))
+    # Two independent detectors counting different numbers of flights is the signature
+    # of a mis-set `rpm` floor (issue #3: a fixed 90 Hz floor above a large-prop hover
+    # read one flight as five) or of a land detector that fired in the air. Cheap to
+    # detect, and the one thing that would have caught the bug before it shipped.
+    by_ev = flights(log, method="ev")
+    by_rpm = flights(log, method="rpm", hz_floor=w.hz_floor)
+    if by_ev and by_rpm and len(by_ev) != len(by_rpm):
+        floor = by_rpm[0].hz_floor
+        sec.add(Result("flight detectors disagree", WARN,
+                       f"EV land detector finds {len(by_ev)} flight(s) ("
+                       + ", ".join(f"{f.t0:.1f}-{f.t1:.1f} s" for f in by_ev)
+                       + f"), ESC fundamental > {floor:.1f} Hz finds {len(by_rpm)} ("
+                       + ", ".join(f"{f.t0:.1f}-{f.t1:.1f} s" for f in by_rpm)
+                       + "). If the rpm floor sits above this aircraft's hover, pass "
+                         "--hz-floor; if the motors kept spinning through a landing, trust EV.",
+                       evidence=dict(ev=len(by_ev), rpm=len(by_rpm), hz_floor=floor,
+                                     ev_flights=[(f.t0, f.t1) for f in by_ev],
+                                     rpm_flights=[(f.t0, f.t1) for f in by_rpm]),
+                       source="dflog flight segmentation (ev vs rpm)"))
     ev = events(log)
     arm = [t for t, i, _ in ev if i == 10]
     dis = [t for t, i, _ in ev if i == 11]
@@ -1535,16 +1554,17 @@ ALL_CHECKS = [
 ]
 
 
-def run(log, names=None, window=None, method="auto", flight=None, **kw):
+def run(log, names=None, window=None, method="auto", flight=None, hz_floor=None, **kw):
     """Run checks by name (default: all). Returns [Section].
 
     A check that raises is reported as a FAIL result naming the exception - a broken
     check must never kill the report, and must never look like a clean one either.
 
     `flight` (1-based) selects one flight on a log that holds several, so a library
-    caller need not construct the window itself. Ignored when `window` is given.
+    caller need not construct the window itself. `hz_floor` is the `rpm` detector's
+    floor (None: derived from the log). Both are ignored when `window` is given.
     """
-    w = window or airborne_window(log, method=method, flight=flight)
+    w = window or airborne_window(log, method=method, flight=flight, hz_floor=hz_floor)
     out = []
     for name, fn in ALL_CHECKS:
         if names and name not in names:

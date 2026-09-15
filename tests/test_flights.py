@@ -55,17 +55,22 @@ def _writer():
 
 
 def _make(spans, name, span=SPAN, ev=True, esc=True, ctun=True, arm=None,
-          rpm_dips=(), extra_events=()):
+          rpm_dips=(), extra_events=(), rpm_flying=RPM_FLYING, rpm_climbs=(), rpm_climb=None,
+          ev_spans=None, rpm_idle=RPM_IDLE):
     """A log whose aircraft flew during `spans` [(t0, t1), ...] and sat on the ground
     otherwise.
 
     ev/esc/ctun switch each detector's evidence on or off independently, so a test can
     exercise one detector in isolation. `arm` is [(t0, t1), ...] of armed periods.
     `rpm_dips` are [(t0, t1)] inside a span where the fundamental drops below the floor.
+    `rpm_flying` is the cruising RPM; `rpm_climbs` are [(t0, t1)] where it rises to
+    `rpm_climb` instead (a large-prop aircraft only clears a fixed 90 Hz floor in climbs).
+    `ev_spans` overrides the flights the EV stream reports, when it should disagree with
+    the ESC stream. `rpm_idle` is the RPM while on the ground (armed idle, or 0).
     """
     w = _writer()
     if ev:
-        for t0, t1 in spans:
+        for t0, t1 in (spans if ev_spans is None else ev_spans):
             w.msg("EV", TimeUS=int(t0 * 1e6), Id=28)          # NOT_LANDED
             if t1 is not None:
                 w.msg("EV", TimeUS=int(t1 * 1e6), Id=18)      # LAND_COMPLETE
@@ -88,9 +93,11 @@ def _make(spans, name, span=SPAN, ev=True, esc=True, ctun=True, arm=None,
         t = i / HZ
         up = airborne(t)
         if esc:
+            rpm = rpm_idle
+            if up:
+                rpm = rpm_climb if any(a <= t <= b for a, b in rpm_climbs) else rpm_flying
             for inst in range(4):
-                w.msg("ESC", TimeUS=int(t * 1e6), Instance=inst,
-                      RPM=RPM_FLYING if up else RPM_IDLE, Volt=7.8)
+                w.msg("ESC", TimeUS=int(t * 1e6), Instance=inst, RPM=rpm, Volt=7.8)
         if ctun:
             w.msg("CTUN", TimeUS=int(t * 1e6), ThO=0.5 if up else 0.0)
     p = os.path.join(TMP, name)
@@ -220,17 +227,111 @@ def test_longest_flight_wins_when_they_differ():
 
 def test_single_flight_window_is_unchanged():
     """A one-flight log's window and *method string* are byte-identical to before this
-    change: no `flight k of n` suffix, so existing reports and docs stay valid."""
+    change: no `flight k of n` suffix, so existing reports and docs stay valid.
+
+    Amended for issue #3: the `rpm` floor is now derived from the log unless given, and
+    the method string says what it derived. Passing `hz_floor=90.0` explicitly reproduces
+    the pre-#3 string exactly, which is what a report written before then quoted."""
     w = airborne_window(ONE, method="ev")
     _span(w, 10.0, 60.0)
     assert w.method == "EV NOT_LANDED->LAND_COMPLETE"
-    w = airborne_window(ONE, method="rpm")
+    w = airborne_window(ONE, method="rpm", hz_floor=90.0)
     _span(w, 10.0, 60.0)
     assert w.method == "ESC fundamental > 90 Hz"
     assert w.note == "same definition regardless of land-detector state"
+    w = airborne_window(ONE, method="rpm")
+    _span(w, 10.0, 60.0)
+    assert w.method.startswith("ESC fundamental > "), w.method
+    assert "spinning median" in w.method, w.method
     w = airborne_window(ONE, method="throttle")
     assert w.method == "CTUN.ThO > 0.15"
     assert airborne_window(ONE, method="auto").method == "EV NOT_LANDED->LAND_COMPLETE"
+
+
+# ------------------------------------------ Group D: the rpm floor (issue #3)
+#
+# A 10-inch / 380 KV quad hovers near 84 Hz (5040 RPM). A fixed 90 Hz floor sits *above*
+# that, so the mask only latches in climbs and every cruise between two climbs reads as a
+# landing. This synthetic aircraft cruises at 84 Hz and climbs to 100 Hz three times.
+
+RPM_HOVER_LARGE = 5040.0      # 84 Hz
+RPM_CLIMB_LARGE = 6000.0      # 100 Hz
+LARGE = _make([(10.0, 170.0)], "largeprop.bin",
+              rpm_flying=RPM_HOVER_LARGE, rpm_climb=RPM_CLIMB_LARGE,
+              rpm_climbs=[(12.0, 30.0), (70.0, 90.0), (140.0, 150.0)])
+
+
+def test_fixed_90hz_floor_splits_a_large_prop_flight():
+    """The failure from the issue, kept as the explicit-floor behaviour: with the floor
+    pinned at 90 Hz the aircraft is 'airborne' only in its three climbs."""
+    fl = flights(LARGE, method="rpm", hz_floor=90.0)
+    assert len(fl) == 3, [str(f) for f in fl]
+    assert all("> 90 Hz" in f.method for f in fl)
+
+
+def test_derived_floor_finds_one_flight_on_a_large_prop_log():
+    """Default floor: 60 % of the spinning median, so it scales with the aircraft."""
+    fl = flights(LARGE, method="rpm")
+    assert len(fl) == 1, [str(f) for f in fl]
+    _span(fl[0], 10.0, 170.0)
+    assert len(flights(LARGE, method="ev")) == 1
+    w = airborne_window(LARGE, method="rpm")
+    _span(w, 10.0, 170.0)
+    assert w.hz_floor == pytest.approx(0.6 * 84.0, abs=0.5), w.hz_floor
+    assert "spinning median" in w.method and "50." in w.method, w.method
+
+
+def test_derived_floor_still_separates_two_flights_on_a_small_prop_log():
+    """The derivation must not regress the small-prop case: 140 Hz cruise, 60 s on the
+    ground between two flights, and the floor lands at 84 Hz - above idle, below cruise."""
+    fl = flights(TWO, method="rpm")
+    assert len(fl) == 2, [str(f) for f in fl]
+    _span(fl[0], 10.0, 60.0)
+    _span(fl[1], 120.0, 170.0)
+    assert fl[0].hz_floor == pytest.approx(84.0, abs=0.5)
+
+
+def test_derived_floor_clears_an_armed_idle_on_the_ground():
+    """Armed idle at MOT_SPIN_ARM spins the props (~25 Hz here) without flying. The
+    derived floor must sit above that, so ground idle is not a flight."""
+    log = _make([(30.0, 150.0)], "idle.bin", rpm_flying=RPM_HOVER_LARGE, rpm_idle=1500.0,
+                arm=[(5.0, 175.0)])
+    fl = flights(log, method="rpm")
+    assert len(fl) == 1, [str(f) for f in fl]
+    _span(fl[0], 30.0, 150.0)
+
+
+def test_explicit_floor_is_honoured_and_named():
+    fl = flights(LARGE, method="rpm", hz_floor=60.0)
+    assert len(fl) == 1 and fl[0].method == "ESC fundamental > 60 Hz", fl[0].method
+    assert fl[0].hz_floor == 60.0
+
+
+def test_hover_window_method_picks_the_longest_hover_chunk():
+    """issue #10: `--window hover` is the CLI route to hover_chunks()."""
+    w = _writer()
+    w.msg("EV", TimeUS=int(10.0 * 1e6), Id=28)
+    w.msg("EV", TimeUS=int(170.0 * 1e6), Id=18)
+    w.msg("MODE", TimeUS=int(5.0 * 1e6), ModeNum=0, Rsn=1, ThrCrs=0)        # STABILIZE
+    w.msg("MODE", TimeUS=int(40.0 * 1e6), ModeNum=5, Rsn=1, ThrCrs=0)       # LOITER 40-60
+    w.msg("MODE", TimeUS=int(60.0 * 1e6), ModeNum=0, Rsn=1, ThrCrs=0)
+    w.msg("MODE", TimeUS=int(100.0 * 1e6), ModeNum=5, Rsn=1, ThrCrs=0)      # LOITER 100-150
+    w.msg("MODE", TimeUS=int(150.0 * 1e6), ModeNum=0, Rsn=1, ThrCrs=0)
+    for i in range(int(SPAN * HZ)):
+        t = i / HZ
+        up = 10.0 <= t <= 170.0
+        for inst in range(4):
+            w.msg("ESC", TimeUS=int(t * 1e6), Instance=inst, RPM=RPM_FLYING if up else 0.0, Volt=7.8)
+        w.msg("RCIN", TimeUS=int(t * 1e6), C1=1500, C2=1500, C3=1500, C4=1500)
+    log = Log(w.write(os.path.join(TMP, "hover_window.bin")), use_cache=False)
+    win = airborne_window(log, method="hover")
+    _span(win, 100.0, 150.0)
+    assert win.method.startswith("hover chunk 2 of 2"), win.method
+    assert "LOITER" in win.method
+    # a log with no hover at all falls back, and says so
+    lo, hi = LARGE.duration()
+    fb = airborne_window(LARGE, method="hover")
+    assert (fb.t0, fb.t1) == (lo, hi) and "FALLBACK" in fb.method, fb.method
 
 
 def test_fallback_window_is_unchanged():
