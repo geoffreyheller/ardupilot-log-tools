@@ -48,7 +48,7 @@ except ImportError:  # pragma: no cover - pandas is a hard dependency in practic
     pd = None
 
 __all__ = ["Log", "FORMAT_CHARS", "CACHE_VERSION", "Diagnostics", "Issue",
-           "LogIntegrityError", "gps_to_unix"]
+           "LogIntegrityError", "gps_to_unix", "COLUMN_ALIASES", "suggest_column"]
 
 # Bump when the parser's output structure changes, so stale caches are ignored.
 CACHE_VERSION = 4
@@ -112,6 +112,84 @@ NAN_ALLOWED = {
 
 _SEVERITY_RANK = {"info": 0, "warning": 1, "error": 2}
 _MAX_EXAMPLES = 8
+
+# Field names drift between firmware versions and analysts reach for the older, the
+# newer, or the MAVLink spelling. Upper-cased guess -> the ArduPilot 4.x column name.
+# `gg["HDOP"]` raising a bare KeyError: 'HDOP' cost a turn (issue #10); the column is HDop.
+COLUMN_ALIASES = {
+    "HDOP": "HDop", "HDP": "HDop", "EPH": "HDop", "VDOP": "VDop", "EPV": "VDop",
+    "NSAT": "NSats", "NUMSV": "NSats", "SATS": "NSats", "SATELLITES_VISIBLE": "NSats",
+    "LON": "Lng", "LONG": "Lng", "LONGITUDE": "Lng", "LATITUDE": "Lat",
+    "BARALT": "BAlt", "THROUT": "ThO", "THRIN": "ThI", "CRATE": "CRt", "DCRATE": "DCRt",
+    "THRHOVER": "ThH", "ALTHOLD": "TAlt", "WPALT": "TAlt",
+    "CLIP0": "Clip", "CLIP1": "Clip", "CLIP2": "Clip",
+    "ROLLIN": "DesRoll", "PITCHIN": "DesPitch", "YAWIN": "DesYaw",
+    "GYRX": "GyrX", "GYRY": "GyrY", "GYRZ": "GyrZ", "ACCX": "AccX", "ACCY": "AccY", "ACCZ": "AccZ",
+    "CURRTOT": "CurrTot", "CURR": "Curr", "VOLT": "Volt", "TEMP": "Temp",
+    "ERRRP": "errRP", "ERRYAW": "errYaw",
+}
+for _i in range(1, 17):
+    COLUMN_ALIASES[f"CHAN{_i}"] = f"C{_i}"
+    COLUMN_ALIASES[f"CH{_i}"] = f"C{_i}"
+
+
+def suggest_column(columns, name, fuzzy=False):
+    """The column `name` most likely meant, or None.
+
+    Tries the alias table, a case-insensitive match, then a prefix in either direction
+    (`Clip0` for `Clip`); with `fuzzy`, difflib as a last resort for an error message.
+    """
+    cols = list(columns)
+    alias = COLUMN_ALIASES.get(str(name).upper())
+    if alias in cols:
+        return alias
+    lower = {c.lower(): c for c in cols}
+    if str(name).lower() in lower:
+        return lower[str(name).lower()]
+    key = str(name).lower()
+    for c in cols:
+        cl = c.lower()
+        if len(cl) >= 2 and len(key) >= 2 and (cl.startswith(key) or key.startswith(cl)):
+            return c
+    if fuzzy:
+        import difflib
+        hit = difflib.get_close_matches(str(name), cols, n=1, cutoff=0.6)
+        if hit:
+            return hit[0]
+    return None
+
+
+class _Frame(pd.DataFrame if pd is not None else object):
+    """A DataFrame that names the near-miss when a column is missing.
+
+    `df["HDOP"]` on a GPS frame raises KeyError("no column 'HDOP' in GPS; did you mean
+    'HDop'? ...") instead of KeyError: 'HDOP'. Everything else is pandas; the message name
+    rides along in `_dflog_msg` through clip(), instances() and copies.
+    """
+
+    _metadata = ["_dflog_msg"]
+
+    @property
+    def _constructor(self):
+        return _Frame
+
+    def __getitem__(self, key):
+        try:
+            return super().__getitem__(key)
+        except KeyError:
+            if isinstance(key, str):
+                raise KeyError(_column_error(self, key)) from None
+            raise
+
+
+def _column_error(df, key):
+    msg = getattr(df, "_dflog_msg", None) or "this message"
+    cols = [str(c) for c in df.columns]
+    hit = suggest_column(cols, key, fuzzy=True)
+    listing = ", ".join(cols)
+    if hit:
+        return f"no column {key!r} in {msg}; did you mean {hit!r}? (columns: {listing})"
+    return f"no column {key!r} in {msg}: not logged on this board or firmware (columns: {listing})"
 
 
 def gps_to_unix(week, ms, leap_seconds=18):
@@ -817,13 +895,27 @@ class Log:
             return self._df_cache[name]
         rows = self.messages.get(name)
         if not rows:
-            out = pd.DataFrame()
+            out = _Frame()
         else:
-            out = pd.DataFrame(rows)
+            out = _Frame(rows)
             if "TimeUS" in out.columns:
                 out["t"] = out["TimeUS"].astype("float64") / 1e6
+        out._dflog_msg = name
         self._df_cache[name] = out
         return out.copy() if copy else out
+
+    def column(self, msg, name):
+        """The column of `msg` that `name` refers to under any known spelling, or None.
+
+        Strict: the alias table, a case-insensitive match, or a prefix match - never a
+        fuzzy guess, so a script can branch on it. `log.column("GPS", "HDOP")` is "HDop".
+        """
+        d = self.df(msg)
+        if d.empty:
+            return None
+        if name in d.columns:
+            return name
+        return suggest_column(list(d.columns), name)
 
     def field(self, msg, *aliases, default=None):
         """First present column among `aliases`, as a numpy array.

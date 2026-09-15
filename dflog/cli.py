@@ -255,7 +255,7 @@ def cmd_check(args, names):
     if flight == "all":
         return _cmd_check_all(args, names, log)
     w = _window(log, args, flight=flight)
-    secs = run(log, names, window=w, normalise=not args.raw_factors)
+    secs = run(log, names, window=w, normalise=not args.raw_factors, arm_mm=args.arm_mm)
     if args.json:
         counts, bad = _verdict(secs)
         _emit_json(_finite(_envelope("all" if names is None else ",".join(names), log, w,
@@ -308,8 +308,8 @@ def _cmd_check_all(args, names, log):
     # all, and must produce no per-flight blocks rather than the whole battery twice.
     whole = [n for n in (names or CHECK_NAMES) if n in WHOLE_LOG_CHECKS]
     per_names = [n for n in (names or CHECK_NAMES) if n not in WHOLE_LOG_CHECKS]
-    whole_secs = run(log, whole, window=windows[0], normalise=not args.raw_factors) if whole else []
-    per = [(w, run(log, per_names, window=w, normalise=not args.raw_factors) if per_names else [])
+    whole_secs = run(log, whole, window=windows[0], normalise=not args.raw_factors, arm_mm=args.arm_mm) if whole else []
+    per = [(w, run(log, per_names, window=w, normalise=not args.raw_factors, arm_mm=args.arm_mm) if per_names else [])
            for w in windows]
     every = whole_secs + [s for w, ss in per for s in _labelled(ss, w.index)]
     code = _exit_code(every)
@@ -610,7 +610,7 @@ def cmd_compare(args):
     per = []
     for path, log in logs:
         w = _window(log, args, flight=flight)
-        secs = run(log, names, window=w, normalise=not args.raw_factors)
+        secs = run(log, names, window=w, normalise=not args.raw_factors, arm_mm=args.arm_mm)
         per.append((os.path.basename(path), log, w, {r.name: r for s in secs for r in s.results}))
     keys = []
     for _, _, _, rs in per:
@@ -882,6 +882,9 @@ def main(argv=None):
         add_window(p)
         p.add_argument("--raw-factors", action="store_true",
                        help="un-normalised cos mix factors, to reproduce pre-2026-09 trim numbers")
+        p.add_argument("--arm-mm", type=float, default=None, metavar="MM",
+                       help="distance from the CG to the front motor line, mm: turns the CG offset "
+                            "the motors check derives from per-motor RPM into millimetres")
         p.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
 
     q = sub.add_parser("info", help="identity, integrity, data quality and logging coverage - run first")
@@ -927,6 +930,7 @@ def main(argv=None):
     q.add_argument("--checks", help=f"comma-separated subset of: {', '.join(CHECK_NAMES)}")
     add_window(q)
     q.add_argument("--raw-factors", action="store_true")
+    q.add_argument("--arm-mm", type=float, default=None, metavar="MM")
     q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     q = sub.add_parser("fft", help="local FFT (scipy) of a logged signal, peaks labelled in motor orders")
     q.add_argument("log")
@@ -961,6 +965,8 @@ def main(argv=None):
         args.raw_factors = False
     if not hasattr(args, "hz_floor"):
         args.hz_floor = None
+    if not hasattr(args, "arm_mm"):
+        args.arm_mm = None
 
     dispatch = {"info": cmd_info, "integrity": cmd_integrity, "types": cmd_types, "fields": cmd_fields,
                 "dump": cmd_dump, "params": cmd_params, "compare": cmd_compare, "fft": cmd_fft,

@@ -22,7 +22,7 @@ except ImportError:
     import _shim as pytest
 
 from dflog import Log, airborne_window                                   # noqa: E402
-from dflog.analysis import check_gps, check_motors, check_power          # noqa: E402
+from dflog.analysis import check_gps, check_motors, check_notch, check_power   # noqa: E402
 from dflog.checks import T                                               # noqa: E402
 from synthlog import LogWriter, standard_log                             # noqa: E402
 
@@ -76,20 +76,25 @@ PACK_V = 25.0
 
 def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temps=(35.0, 36.0, 35.0, 36.0),
                stopped_current=0.0, hover_pwm=1400, idle_pwm=1100, full=(80.0, 90.0), att=None,
-               modes=(), hover_thh=0.40, extra_params=None):
+               modes=(), hover_thh=0.40, extra_params=None, trim_fn=None, imu_hz=None):
     """Ground (0-5 s motors stopped, 5-10 s armed idle), flight 10-110 s at hover_pwm with a
     full-throttle burst over `full`, landing, then motors stopped again 110-120 s.
 
     `k[m-1]` is motor m's RPM per (duty x volt); `pwm_trim[m-1]` a standing offset in us on
     motor m (a CG offset loads a pair harder); `stopped_current` what BAT.Curr reads with
     every motor stopped (a zero offset, issue #6). Current follows total duty otherwise.
-    `att` is a callable t -> (roll, pitch) degrees; `modes` [(t, mode_num)].
+    `att` is a callable t -> (roll, pitch) degrees; `modes` [(t, mode_num)]; `trim_fn`
+    t -> pwm trims overrides `pwm_trim` (a trim that only exists while translating);
+    `imu_hz` adds a gyro stream at that rate so the coverage/Nyquist logic has a source.
     """
     w = _writer()
     _params(w, SERVO1_MIN=1000, SERVO1_MAX=2000, MOT_SPIN_MIN=0.15, MOT_SPIN_MAX=0.95, MOT_SPIN_ARM=0.10,
             MOT_THST_HOVER=hover_thh, **SERVO_FN, **(extra_params or {}))
     for t, num in modes:
         w.msg("MODE", TimeUS=int(t * 1e6), ModeNum=num, Rsn=1, ThrCrs=0)
+    if imu_hz:
+        for j in range(int(SPAN * imu_hz)):
+            w.msg("IMU", TimeUS=int(j / imu_hz * 1e6), I=0, GyrX=0.01 * (j % 3), GyrY=0.0, GyrZ=0.0)
     tot_mah = 0.0
     for i in range(int(SPAN * HZ)):
         t = i / HZ
@@ -98,9 +103,10 @@ def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temp
         idle = 5.0 <= t < FLIGHT[0]
         burst = full[0] <= t <= full[1]
         base = 1000 if stopped else (idle_pwm if idle else (1950 if burst else hover_pwm))
+        trims = trim_fn(t) if trim_fn is not None else pwm_trim
         pwm = {}
         for m in range(1, 5):
-            pwm[m] = base if stopped else base + pwm_trim[m - 1]
+            pwm[m] = base if stopped else base + trims[m - 1]
         v = PACK_V - 0.002 * t
         duty = {m: (pwm[m] - 1000) / 1000.0 for m in pwm}
         rpm = {m: (0.0 if stopped else k[m - 1] * duty[m] * v) for m in pwm}
@@ -373,6 +379,186 @@ def test_drive_normalised_rpm_skips_without_a_pack_voltage():
     rs = _results(check_motors(log, airborne_window(log, method="ev")))
     assert rs["drive-normalised RPM spread"].status == "SKIP"
     assert "volt" in rs["drive-normalised RPM spread"].summary.lower()
+
+
+# ------------------------------------------------------------ issue #8
+
+# Quad X: motor 1 front-right, 2 rear-left, 3 front-left, 4 rear-right.
+FRONT_PLUS_60 = (60, 0, 60, 0)
+
+
+def test_cg_offset_is_expressed_as_a_fraction_of_the_arm():
+    """Thrust goes as RPM^2: with the front pair at duty 0.46 and the rear at 0.40 the
+    thrust ratio is (0.46/0.40)^2 = 1.3225 and the CG sits (r-1)/(r+1) = 13.9 % of the
+    fore-aft arm forward of centre. In millimetres when the arm is given."""
+    log = _motor_log("cg_pct.bin", pwm_trim=FRONT_PLUS_60)
+    w = airborne_window(log, method="ev")
+    sec = check_motors(log, w)
+    t = _table(sec, "cg")
+    rows = {r[0]: dict(zip(t["columns"], r)) for r in t["rows"]}
+    assert rows["pitch"]["CG offset (% of arm)"] == pytest.approx(13.9, abs=0.4), rows
+    assert rows["roll"]["CG offset (% of arm)"] == pytest.approx(0.0, abs=0.3)
+    assert rows["pitch"]["mm"] is None                      # no arm length given
+    assert "forward" in rows["pitch"]["reads as"]
+    rs = _results(sec)
+    assert rs["pitch trim"].evidence["cg_offset_pct"] == pytest.approx(13.9, abs=0.4)
+    sec = check_motors(log, w, arm_mm=151.0)
+    t = _table(sec, "cg")
+    rows = {r[0]: dict(zip(t["columns"], r)) for r in t["rows"]}
+    assert rows["pitch"]["mm"] == pytest.approx(0.139 * 151.0, abs=0.8), rows
+    assert "151" in _notes(sec)
+
+
+def test_cg_offset_needs_esc_rpm():
+    w = _writer()
+    _params(w, **SERVO_FN)
+    for i in range(int(SPAN * HZ)):
+        j = i % 3
+        w.msg("RCOU", TimeUS=int(i / HZ * 1e6), C1=1400 + j, C2=1460 + j, C3=1400 + j, C4=1460 + j)
+    log = _load(w, "cg_norpm.bin")
+    sec = check_motors(log, airborne_window(log, method="ev"))
+    assert not any(t["name"] == "cg" for t in sec.tables)
+    assert "ESC RPM" in _notes(sec)
+
+
+def _tilt_att(t):
+    """Level in the two LOITER chunks (40-60, 100-150 s), pitched 10 deg forward elsewhere."""
+    level = 40.0 <= t <= 60.0 or 100.0 <= t <= 150.0
+    return (0.0, 0.0) if level else (0.0, 10.0)
+
+
+LOITER_MODES = ((5.0, 0), (40.0, 5), (60.0, 0), (100.0, 5), (110.0, 0))
+
+
+def test_trim_is_cross_checked_against_level_hover():
+    """A standing trim that is the same over the whole window and over level hover is a
+    static asymmetry (CG, blade); one that vanishes when the aircraft stops translating
+    is a translation artefact. The check reports both and flags a divergence."""
+    static = _motor_log("trim_static.bin", pwm_trim=FRONT_PLUS_60, att=_tilt_att, modes=LOITER_MODES)
+    sec = check_motors(static, airborne_window(static, method="ev"))
+    rs = _results(sec)
+    r = rs["trim vs level hover"]
+    assert r.status == "PASS", r.summary
+    assert r.evidence["window"]["pitch"] == pytest.approx(60.0, abs=1.0)
+    assert r.evidence["hover"]["pitch"] == pytest.approx(60.0, abs=1.0)
+    assert r.evidence["value"] < 2.0
+    assert "static" in r.summary.lower()
+    t = _table(sec, "trim_hover")
+    assert [row[0] for row in t["rows"]] == ["roll", "pitch", "yaw"]
+    # the same trim only while pitched forward: gone in level hover
+    artefact = _motor_log("trim_artefact.bin", att=_tilt_att, modes=LOITER_MODES,
+                          trim_fn=lambda t: (0, 0, 0, 0) if _tilt_att(t)[1] == 0.0 else FRONT_PLUS_60)
+    rs = _results(check_motors(artefact, airborne_window(artefact, method="ev")))
+    r = rs["trim vs level hover"]
+    assert r.status == "FAIL", r.summary
+    assert r.evidence["hover"]["pitch"] == pytest.approx(0.0, abs=1.0)
+    assert r.evidence["window"]["pitch"] > 30.0
+    assert "translation" in r.summary.lower()
+
+
+def test_trim_cross_check_falls_back_to_level_samples_and_skips_without_them():
+    # no hover chunk (no MODE), but level ATT samples exist: use them and say so
+    log = _motor_log("trim_level.bin", pwm_trim=FRONT_PLUS_60, att=_tilt_att)
+    rs = _results(check_motors(log, airborne_window(log, method="ev")))
+    r = rs["trim vs level hover"]
+    assert r.status == "PASS" and "level-attitude samples" in r.summary, r.summary
+    # never level: nothing to cross-check against
+    log = _motor_log("trim_never_level.bin", pwm_trim=FRONT_PLUS_60, att=lambda t: (0.0, 10.0))
+    rs = _results(check_motors(log, airborne_window(log, method="ev")))
+    assert rs["trim vs level hover"].status == "SKIP"
+    # no ATT at all
+    log = _motor_log("trim_noatt.bin", pwm_trim=FRONT_PLUS_60)
+    rs = _results(check_motors(log, airborne_window(log, method="ev")))
+    assert rs["trim vs level hover"].status == "SKIP" and "ATT" in rs["trim vs level hover"].summary
+
+
+# ------------------------------------------------------------ issue #9
+
+def test_notch_disabled_is_distinguished_from_not_logged():
+    """Both used to be 'SKIP - FCNS not logged'. They call for opposite actions."""
+    off = _motor_log("notch_off.bin", extra_params=dict(INS_HNTCH_ENABLE=0), imu_hz=25.0)
+    rs = _results(check_notch(off, airborne_window(off, method="ev")))
+    assert rs["notch"].status == "SKIP" and "DISABLED" in rs["notch"].summary, rs["notch"].summary
+    on = _motor_log("notch_on_nolog.bin", imu_hz=25.0,
+                    extra_params=dict(INS_HNTCH_ENABLE=1, INS_HNTCH_MODE=3, INS_HNTCH_FREQ=80, INS_HNTCH_BW=40))
+    rs = _results(check_notch(on, airborne_window(on, method="ev")))
+    assert rs["notch"].status == "SKIP"
+    assert "ENABLED" in rs["notch"].summary and "not logged" in rs["notch"].summary, rs["notch"].summary
+    assert "DISABLED" not in rs["notch"].summary
+    unknown = _motor_log("notch_unknown.bin", imu_hz=25.0)
+    rs = _results(check_notch(unknown, airborne_window(unknown, method="ev")))
+    assert "INS_HNTCH_ENABLE" in rs["notch"].summary and "not in the log" in rs["notch"].summary
+
+
+def test_notch_recommendation_when_disabled():
+    """The check already holds the fundamental envelope; when the notch is off it should
+    say what the envelope is and suggest a starting point, instead of discarding it."""
+    log = _motor_log("notch_rec.bin", extra_params=dict(INS_HNTCH_ENABLE=0), imu_hz=25.0,
+                     pwm_trim=FRONT_PLUS_60)
+    sec = check_notch(log, airborne_window(log, method="ev"))
+    env = {r[0]: r[1] for r in _table(sec, "fundamental")["rows"]}
+    # hover: motors at duty 0.40/0.46 x 25 V x 340 -> 3400 / 3910 RPM, fleet mean ~ 61 Hz
+    assert env["median"] == pytest.approx(60.9, abs=1.5), env
+    assert env["p01"] == pytest.approx(60.9, abs=2.0)
+    assert env["max"] > 120.0                                   # the full-throttle burst
+    assert env["min"] <= env["p01"] <= env["median"] <= env["p99"] <= env["max"]
+    rec = {r[0]: r[1] for r in _table(sec, "recommendation")["rows"]}
+    assert rec["INS_HNTCH_MODE"] == 3
+    assert rec["INS_HNTCH_REF"] == 1
+    assert rec["INS_HNTCH_FREQ"] == 55                          # 0.95 x p01, rounded down to 5 Hz
+    assert rec["INS_HNTCH_BW"] == 27                            # FREQ / 2
+    assert rec["INS_HNTCH_HMNCS"] == 3
+    assert rec["INS_HNTCH_ATT"] == 40
+    assert rec["INS_HNTCH_OPTS"] == 2                           # per-motor spread > 5 %
+    per = {r[0]: r for r in _table(sec, "per_motor")["rows"]}
+    assert set(per) == {"ESC0", "ESC1", "ESC2", "ESC3"}
+    notes = _notes(sec)
+    assert "4/4 motors" in notes and "Nyquist 12.5 Hz" in notes and "batchfft" in notes, notes
+    assert "INS_LOG_BAT_MASK=1" in notes
+    # motors within 5 %: no per-motor notches suggested
+    log = _motor_log("notch_rec_even.bin", extra_params=dict(INS_HNTCH_ENABLE=0), imu_hz=25.0)
+    rec = {r[0]: r[1] for r in _table(check_notch(log, airborne_window(log, method="ev")), "recommendation")["rows"]}
+    assert rec["INS_HNTCH_OPTS"] == 0
+
+
+def test_notch_recommendation_needs_esc_telemetry():
+    log = _load(standard_log(n=200), "notch_noesc.bin")
+    sec = check_notch(log, airborne_window(log, method="none"))
+    assert _results(sec)["notch"].status == "SKIP"
+    assert not any(t["name"] == "recommendation" for t in sec.tables)
+
+
+# ------------------------------------------------------------ issue #10 (item 2)
+
+def test_missing_column_names_the_near_miss():
+    """`gg["HDOP"]` -> KeyError: 'HDOP' cost a turn; the column is `HDop`."""
+    log = _gps_log("alias.bin")
+    d = log.df("GPS")
+    for bad, want in (("HDOP", "HDop"), ("hdop", "HDop"), ("NSat", "NSats"), ("Lon", "Lng")):
+        try:
+            d[bad]
+        except KeyError as exc:
+            assert want in str(exc) and bad in str(exc) and "GPS" in str(exc), (bad, str(exc))
+        else:
+            raise AssertionError(f"{bad!r} must raise")
+    # and through the paths a check actually uses: window clip and instance split
+    w = airborne_window(log, method="ev")
+    try:
+        w.clip(d)["HDOP"]
+    except KeyError as exc:
+        assert "HDop" in str(exc), str(exc)
+    try:
+        log.instances("GPS")[0]["HDOP"]
+    except KeyError as exc:
+        assert "HDop" in str(exc), str(exc)
+    # a column this board simply does not log: say so, and list what exists
+    try:
+        d["Clip0"]
+    except KeyError as exc:
+        assert "Clip0" in str(exc) and "HDop" in str(exc) and "not logged" in str(exc).lower(), str(exc)
+    # the happy path is untouched
+    assert d["HDop"].iloc[0] == pytest.approx(0.8, abs=0.01)
+    assert log.column("GPS", "HDOP") == "HDop" and log.column("GPS", "Clip0") is None
 
 
 if __name__ == "__main__":

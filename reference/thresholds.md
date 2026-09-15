@@ -124,6 +124,7 @@ DLA's `battery` low threshold is 15 % remaining.
 |---|---|---|---|
 | `rpm_spread_pct` | 3 % | 8 % | MEAS — on **medians**. Healthy baseline 1.4 %, bent prop 5.7 %, worst observed 7.5 %. |
 | `trim_us` | 10 | 25 | MEAS — `\|roll/pitch/yaw trim\|` in µs; healthy baseline yaw −5.0, bent-prop yaw +22.6 |
+| `trim_hover_diff_us` | 10 | 25 | MEAS — largest-axis difference between the trim over the whole window and the same trim over level hover (hover chunks with `\|roll\|,\|pitch\|` < 3°, or level samples when there is no chunk). Identical means a static asymmetry (CG, blade, mount); a static case read 58.6 vs 57.8 µs. Different means the trim depends on translating — wind or a forward-flight artefact (issue #8) |
 | `esc_err_pct` | 5 % | 15 % | MEAS — a healthy bidirectional-DShot link runs 2.7–3.3 % steadily with no ill effect |
 | `motor_headroom` | 0.90 | 0.97 | DLA-style — p99.5 output as a fraction of the `MOT_SPIN_MAX` ceiling |
 | `drive_norm_spread_pct` | 3 % | 6 % | MEAS — (max−min)/mean of per-motor median `RPM / (duty × pack V)` over the p20–p80 band of fleet duty. Healthy 1.7–2.4 % on three flights of a 10-inch quad whose *raw* RPM spread was 10–12 % (issue #7): load asymmetry from a CG offset leaves this flat, a dragging motor drops it |
@@ -133,6 +134,12 @@ DLA's `battery` low threshold is 15 % remaining.
 The ESC table also carries p05/p95 RPM (min and max are single samples dominated by
 spin-up and brief saturation) and the motor each ESC drives through the `SERVOn_FUNCTION`
 map, since `ESC[i]` is servo output `i+1`.
+
+The trim table is followed by the **CG offset** it implies, from per-motor RPM medians
+with thrust ∝ RPM²: `r = (mean front RPM / mean rear RPM)²`, offset `(r−1)/(r+1)` of the
+fore-aft arm (CG to the front motor line), positive forward; likewise left/right for roll.
+`--arm-mm` turns it into millimetres. Not graded — `trim_us` already is — but it is the
+number that answers "is that the battery too far aft".
 
 DLA's `motorbalance` uses a PWM delta of warn 50 / fail 100 µs measured only while pitch,
 roll and yaw rates are all below 1 °/s for ≥100 ms — a stricter "stable" gate than
@@ -168,6 +175,16 @@ noise exceeds 40 dB.
 
 `mavfft_isb.py --notch-params` suggests: `INS_HNTCH_REF` = mean `CTUN.ThO` where
 `CTUN.Alt > 1`; `INS_HNTCH_FREQ` = the FFT peak; `INS_HNTCH_BW` = peak ÷ 2.
+
+When the notch is **disabled** (`INS_HNTCH_ENABLE=0`) and the log carries ESC telemetry,
+the notch check prints the measured fundamental envelope (min, p01, median, p99, max and
+each motor's median) and a starting point derived from it (issue #9): `MODE=3` justified
+by the ESC telemetry quality it measured, `REF=1`, `FREQ` = 0.95 × the airborne p01
+fundamental rounded down to 5 Hz (the p01, not the instantaneous minimum, which is a
+touchdown), `BW = FREQ/2`, `HMNCS=3`, `ATT=40`, and `OPTS=2` (per-motor notches) when the
+inter-motor spread exceeds 5 %. It says what cannot be verified from that log and names
+the batch-logging flight that would. A notch that is *enabled* but has no `FCNS` is a
+different SKIP — fix the logging, not the configuration.
 
 ---
 

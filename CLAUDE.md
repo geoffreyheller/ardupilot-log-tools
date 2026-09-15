@@ -237,6 +237,15 @@ essentially no torque asymmetry. A spread number would have shown neither.
 `residual` is the part no control axis explains. A large residual on a quad means this is
 not a trim at all: suspect a failing motor or a bad RPM channel.
 
+Microseconds are not actionable, so the check converts the standing trim into a **CG offset**
+from the per-motor RPM medians: thrust ∝ RPM², `r = (mean front / mean rear)²`, offset
+`(r − 1)/(r + 1)` of the fore-aft arm, positive forward; `--arm-mm` (CG to the front motor
+line) makes it millimetres. It then **re-measures the trim over level hover** (hover chunks
+with |roll|, |pitch| < 3°) and reports both: identical figures are a static asymmetry, a
+trim that vanishes when the aircraft stops translating is a forward-flight artefact or
+wind (`trim vs level hover`). That distinction is the whole diagnosis; read it before
+moving a battery.
+
 > **Convention.** Mix factors are normalised to unit peak, matching ArduPilot's
 > `normalise_rpy_factors()`. Some older analyses use raw `cos()` factors (±0.7071 on a
 > quad X), which makes their roll and pitch figures 1.4142× larger; yaw is identical.
@@ -258,6 +267,14 @@ across that change (6.31 % → 17.24 % mistracking, purely because the second fl
 dynamic) while the notch itself went from 6.5 % mistracking to 0.00 %.
 
 Ground truth is always `ESC.RPM / 60`. Motor noise frequency = RPM ÷ 60.
+
+When the notch is **disabled** and ESC telemetry exists, the `notch` section prints the
+measured fundamental envelope (min / p01 / median / p99 / max, per-motor medians) and a
+starting point — `MODE=3` justified by the ESC telemetry quality it measured, `FREQ` just
+under the airborne p01, `BW = FREQ/2`, `HMNCS=3`, `OPTS=2` when the motors spread more than
+5 % — together with what that log cannot verify and the batch-logging flight that would.
+Do not re-derive those numbers through the Python API; they are in the report. A notch
+that is *enabled* but has no `FCNS` is a different SKIP: fix the logging, not the config.
 
 For the post-filter proof: `INS_LOG_BAT_MASK=1`, `INS_LOG_BAT_OPT=4` (pre **and** post
 filter), fly 30–60 s, then **set the mask back to 0** — batch logging roughly doubles the
@@ -333,7 +350,10 @@ Full list in `reference/pitfalls.md`.
 - **`MULT` multipliers are not applied.** Only format-char scaling (`c C e E L`) is.
   `alog fields MSG` shows both the unit and the (unapplied) MULT for every field.
 - **Field names drift between firmware versions** (`BarAlt`→`BAlt`, `ThrOut`→`ThO`,
-  `CRate`→`CRt`, `Chan1`→`C1`). Use `log.field(msg, "BAlt", "BarAlt")`.
+  `CRate`→`CRt`, `Chan1`→`C1`). Use `log.field(msg, "BAlt", "BarAlt")`, or
+  `log.column(msg, name)` to resolve a spelling. A missing column now raises
+  `KeyError: no column 'HDOP' in GPS; did you mean 'HDop'?` with the columns listed, so
+  the near-miss is named at the point of failure.
 - **Prefer `.bin` over a same-named `.log`/`.tlog`.** The text export is readable but
   flagged `TEXT_LOG`: pre-scaled values, decimated per-instance ESC telemetry, no batch
   arrays.

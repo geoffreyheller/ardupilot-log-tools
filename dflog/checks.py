@@ -142,6 +142,11 @@ T = {
     # --- motors ----------------------------------------------------------
     "rpm_spread_pct": _t(3.0, 8.0, MEAS, "(max-min)/mean of per-motor mean RPM, airborne"),
     "trim_us":        _t(10.0, 25.0, MEAS, "|roll/pitch/yaw trim| in us of motor output"),
+    # The same trim measured over level hover only. Identical means a static asymmetry
+    # (CG, blade, mount); different means the trim depends on translating - wind or a
+    # forward-flight artefact. A static case read 58.6 vs 57.8 us (issue #8).
+    "trim_hover_diff_us": _t(10.0, 25.0, MEAS, "largest-axis |trim over level hover - trim over the whole "
+                                               "window|, us"),
     "esc_err_pct":    _t(5.0, 15.0, MEAS, "ESC.Err, bidirectional DShot error rate percent"),
     "motor_headroom": _t(0.90, 0.97, DLA, "peak output as a fraction of the MOT_SPIN_MAX ceiling"),
     # RPM per unit of electrical drive, RPM / (duty x pack V), compared across motors over

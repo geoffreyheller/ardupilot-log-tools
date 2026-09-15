@@ -27,7 +27,10 @@ is the first thing to mention when the numbers look odd.
 **Field names drift between firmware versions.** `BarAlt`→`BAlt`, `ThrOut`→`ThO`,
 `CRate`→`CRt`, `Chan1`/`Ch1`→`C1`, `NSat`/`numSV`→`NSats`, `HDp`/`EPH`→`HDop`. Hardcoding
 one spelling is the commonest way a script silently breaks on an older log. Use
-`log.field(msg, "BAlt", "BarAlt")`.
+`log.field(msg, "BAlt", "BarAlt")` or `log.column(msg, name)`. Since issue #10 a missing
+column raises `KeyError: no column 'HDOP' in GPS; did you mean 'HDop'? (columns: ...)` -
+alias table, case-insensitive and prefix matches, difflib last - so the near-miss is named
+where it fails rather than a turn later.
 
 **Re-parsing on every script costs real time.** Cache the parse; `dflog` pickles to
 `<log>.dfcache`. `struct.Struct` is not picklable, so store the `FMT` definition and

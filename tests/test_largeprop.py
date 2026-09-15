@@ -25,7 +25,7 @@ except ImportError:
     import _shim as pytest
 
 from dflog import Log, airborne_window, flights, hover_chunks       # noqa: E402
-from dflog.analysis import check_gps, check_motors, check_power       # noqa: E402
+from dflog.analysis import check_gps, check_motors, check_notch, check_power   # noqa: E402
 from dflog.cli import main                                            # noqa: E402
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "largeprop-quad.bin")
@@ -108,6 +108,10 @@ def _table(sec, name):
     return t
 
 
+def _notes(sec):
+    return "\n".join(sec.notes)
+
+
 # --------------------------------------------------------------- issue #5
 
 def test_gps_accuracy_figures_from_gpa():
@@ -185,6 +189,45 @@ def test_drive_normalised_rpm_is_flat_while_raw_spread_is_not():
     assert rows["ESC0"]["motor"] == "M3"           # SERVO1_FUNCTION=35
     assert rs["ESC temperature"].status == "PASS"
     assert rs["ESC temperature spread"].status == "PASS"
+
+
+# --------------------------------------------------------------- issue #8
+
+def test_cg_offset_and_level_hover_cross_check():
+    """Motor-order RPM medians M1 5349, M2 4843, M3 5148, M4 4742: front pair 5248,
+    rear 4792, thrust ratio (5248/4792)^2 = 1.199, so the CG sits 9.1 % of the fore-aft
+    arm forward - 13.7 mm on a 151 mm arm. The pitch trim over the whole window and over
+    the three LOITER hover chunks agree, so it is a static asymmetry."""
+    w = airborne_window(LOG, method="ev")
+    sec = check_motors(LOG, w, arm_mm=151.0)
+    t = _table(sec, "cg")
+    rows = {r[0]: dict(zip(t["columns"], r)) for r in t["rows"]}
+    assert rows["pitch"]["CG offset (% of arm)"] == pytest.approx(9.1, abs=0.5), rows
+    assert rows["pitch"]["mm"] == pytest.approx(13.7, abs=0.8)
+    assert rows["roll"]["CG offset (% of arm)"] == pytest.approx(-1.0, abs=0.7)
+    rs = _results(sec)
+    assert rs["pitch trim"].evidence["signed"] > 40.0
+    r = rs["trim vs level hover"]
+    assert r.status == "PASS", r.summary
+    assert "hover chunk" in r.summary
+    assert abs(r.evidence["window"]["pitch"] - r.evidence["hover"]["pitch"]) < 10.0
+
+
+# --------------------------------------------------------------- issue #9
+
+def test_notch_disabled_gets_an_envelope_and_a_starting_point():
+    sec = check_notch(LOG, airborne_window(LOG, method="ev"))
+    rs = _results(sec)
+    assert rs["notch"].status == "SKIP" and "DISABLED" in rs["notch"].summary
+    env = {r[0]: r[1] for r in _table(sec, "fundamental")["rows"]}
+    assert env["median"] == pytest.approx(83.8, abs=0.5), env
+    assert env["p01"] == pytest.approx(59.0, abs=3.0)
+    assert env["max"] == pytest.approx(121.0, abs=3.0)
+    rec = {r[0]: r[1] for r in _table(sec, "recommendation")["rows"]}
+    assert rec["INS_HNTCH_MODE"] == 3 and rec["INS_HNTCH_FREQ"] == 55 and rec["INS_HNTCH_BW"] == 27
+    assert rec["INS_HNTCH_HMNCS"] == 3 and rec["INS_HNTCH_OPTS"] == 2
+    notes = _notes(sec)
+    assert "4/4 motors" in notes and "batchfft" in notes
 
 
 if __name__ == "__main__":

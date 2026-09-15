@@ -11,7 +11,8 @@ See ../CLAUDE.md for how to use this in an analysis session, ../RULES.md for the
 contract every output obeys, and ../reference/ for the message, threshold, pitfall and
 integrity-code references.
 """
-from .parser import Log, FORMAT_CHARS, Diagnostics, Issue, LogIntegrityError, gps_to_unix
+from .parser import (Log, FORMAT_CHARS, Diagnostics, Issue, LogIntegrityError, gps_to_unix,
+                     COLUMN_ALIASES, suggest_column)
 from .flight import (Window, airborne_window, arm_window, flights, mode_timeline, events,
                      esc_fundamental, hover_chunks, derive_hz_floor, motors_stopped,
                      EVENTS, MODES, MODE_REASONS)

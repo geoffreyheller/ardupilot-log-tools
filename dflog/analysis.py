@@ -20,8 +20,8 @@ from __future__ import annotations
 import numpy as np
 
 from .checks import T, Result, PASS, WARN, FAIL, SKIP
-from .flight import (EVENTS, airborne_window, esc_fundamental, events, flights, mode_timeline,
-                     motors_stopped)
+from .flight import (EVENTS, airborne_window, esc_fundamental, events, flights, hover_chunks,
+                     mode_timeline, motors_stopped)
 from .frames import mix_for, trim_decomposition, motor_channels
 from .report import table, fmt, heading
 from .stats import band_split, corr, describe, pct_above, peak_hz
@@ -272,11 +272,7 @@ def check_coverage(log, w):
               rows, align=["l", "l", "r", "r", "r"])
     p = log.params()
     bitmask = p.get("LOG_BITMASK")
-    fast_gyro = max((r for m, r in rates.items() if m in ("GYR", "IMU") and r), default=None)
-    if log.has("ISBD"):
-        isbh = log.df("ISBH")
-        if not isbh.empty:
-            fast_gyro = max(fast_gyro or 0.0, float(np.median(isbh["smp_rate"])))
+    fast_gyro = _fastest_gyro_hz(log)
     t, fund = esc_fundamental(log)
     f0 = float(np.nanmedian(fund[w.mask(t)])) if fund is not None and w.mask(t).any() else None
     if fast_gyro and f0:
@@ -303,6 +299,18 @@ def check_coverage(log, w):
              f"INS_LOG_BAT_OPT={fmt(p.get('INS_LOG_BAT_OPT'))} INS_RAW_LOG_OPT={fmt(p.get('INS_RAW_LOG_OPT'))}. "
              "A message absent from this table is SKIP everywhere below, never a pass.")
     return sec
+
+
+def _fastest_gyro_hz(log):
+    """Sample rate of the fastest gyro stream in the log (GYR, IMU, or ISBH batches), or
+    None. Its Nyquist is the ceiling on any spectral claim made from this log."""
+    rates = [log.rate_hz(m, steady_only=True) for m in ("GYR", "IMU") if log.has(m)]
+    fast = max((r for r in rates if r), default=None)
+    if log.has("ISBD"):
+        isbh = log.df("ISBH")
+        if not isbh.empty and "smp_rate" in isbh.columns:
+            fast = max(fast or 0.0, float(np.median(isbh["smp_rate"])))
+    return fast
 
 
 # ------------------------------------------------------------------- vibration
@@ -337,7 +345,11 @@ def check_vibration(log, w):
 
 # ---------------------------------------------------------------------- motors
 
-def check_motors(log, w, normalise=True):
+def check_motors(log, w, normalise=True, arm_mm=None):
+    """Per-motor outputs and RPM through the SERVOn_FUNCTION map, the standing-trim
+    decomposition, the CG offset it implies (`arm_mm`: CG-to-motor-line distance, for
+    millimetres), the same trim re-measured over level hover, drive-normalised RPM, ESC
+    temperature and error rate, and headroom against the MOT_SPIN_MAX ceiling."""
     rcou = w.clip(log.df("RCOU"))
     p = _Params(log)
     esc = log.instances("ESC")
@@ -369,6 +381,7 @@ def check_motors(log, w, normalise=True):
         means = [float(rcou[c].mean()) for c in chans if c in rcou.columns]
         if len(means) == mix.n:
             tr = trim_decomposition(means, mix)
+            cg = _cg_offset(esc, w, mix, chans)
             sec.table("rcou_means", ["motor"] + [f"M{i + 1} ({c})" for i, c in enumerate(chans)],
                       [["RCOU mean (us)"] + [round(m, 1) for m in means]])
             sec.table("trim", ["axis", "trim (us)", "reads as"],
@@ -382,7 +395,28 @@ def check_motors(log, w, normalise=True):
                                summary_fmt="%s us standing trim (warn {w}, fail {f})" % fmt(tr[ax]),
                                signed=tr[ax],
                                channel_map=dict(zip([f"M{i + 1}" for i in range(len(chans))], chans)),
-                               map_source="SERVOn_FUNCTION" if mapped else "ASSUMED identity"))
+                               map_source="SERVOn_FUNCTION" if mapped else "ASSUMED identity",
+                               **({"cg_offset_pct": cg[ax]} if cg and ax in cg else {})))
+            if cg:
+                rows = []
+                for ax, reads in (("pitch", "+ = CG forward of the motor-line centre (front pair working harder)"),
+                                  ("roll", "+ = CG left of centre (left pair working harder)")):
+                    if ax not in cg:
+                        continue
+                    mm = cg[ax] / 100.0 * arm_mm if arm_mm else None
+                    rows.append([ax, round(cg[ax], 2), round(mm, 1) if mm is not None else None, reads])
+                sec.table("cg", ["axis", "CG offset (% of arm)", "mm", "reads as"], rows,
+                          align=["l", "r", "r", "l"])
+                sec.note("CG offset from per-motor RPM medians with thrust ~ RPM^2: r = (mean front RPM / "
+                         "mean rear RPM)^2 and the offset is (r-1)/(r+1) of the fore-aft arm - the distance "
+                         "from the CG to the front (or rear) motor line - and likewise left/right for roll. "
+                         + (f"Arm {arm_mm:g} mm was given, so the mm column is the distance to move the CG "
+                            "(a battery shift of that much the other way)." if arm_mm else
+                            "Pass --arm-mm (CG to front motor line, mm) to get millimetres."))
+            else:
+                sec.note("CG offset needs ESC RPM for every motor (thrust ~ RPM^2); this log has none, so "
+                         "only the microsecond trim is available.")
+            _trim_vs_hover(log, w, rcou, chans, mix, tr, sec)
             sec.note(f"Mix: {mix.label}"
                      f"{'' if normalise else ' [un-normalised cos factors, legacy mode]'}\n"
                      "Channel -> motor map from SERVOn_FUNCTION: "
@@ -499,6 +533,100 @@ def check_motors(log, w, normalise=True):
     return sec
 
 
+# "Level" for the hover cross-check. Not a graded threshold: it selects samples.
+LEVEL_DEG = 3.0
+HOVER_MIN_SECONDS = 5.0
+
+
+def _cg_offset(esc, w, mix, chans):
+    """{"pitch": %, "roll": %}: the CG offset the per-motor RPM implies, as a fraction of
+    the arm (issue #8). Thrust ~ RPM^2, so with r = (mean front RPM / mean rear RPM)^2 the
+    CG sits (r-1)/(r+1) of the fore-aft arm forward of centre; likewise left/right.
+    Positive pitch = forward, positive roll = left. None without ESC RPM for every motor."""
+    if not esc:
+        return None
+    rpm = {}
+    for i, g in esc.items():
+        gg = w.clip(g)
+        if gg is None or gg.empty or "RPM" not in gg.columns:
+            continue
+        c = f"C{i + 1}"
+        if c in chans:
+            rpm[chans.index(c)] = float(np.nanmedian(gg["RPM"]))
+    if len(rpm) != mix.n or any(not np.isfinite(v) or v <= 0 for v in rpm.values()):
+        return None
+    out = {}
+    for ax, f in (("pitch", mix.pitch), ("roll", mix.roll)):
+        pos = [rpm[m] for m in range(mix.n) if f[m] > 0.01]
+        neg = [rpm[m] for m in range(mix.n) if f[m] < -0.01]
+        if not pos or not neg:
+            continue
+        r = (np.mean(pos) / np.mean(neg)) ** 2
+        out[ax] = float((r - 1.0) / (r + 1.0) * 100.0)
+    return out or None
+
+
+def _trim_vs_hover(log, w, rcou, chans, mix, tr, sec):
+    """issue #8 (b): the standing trim re-measured over level hover only.
+
+    A trim taken over the whole window can be a translation artefact - sustained forward
+    flight loads the pairs unevenly. Over steady hover with |roll|,|pitch| < LEVEL_DEG it
+    cannot be. Identical figures mean a static asymmetry; different ones mean the trim
+    depends on translating. Uses hover_chunks() when the log has any, level-attitude
+    samples otherwise, and says which.
+    """
+    name = "trim vs level hover"
+    att = w.clip(log.df("ATT"))
+    if att is None or att.empty or not {"Roll", "Pitch", "t"} <= set(att.columns) or len(att) < 2:
+        sec.add(Result(name, SKIP, "ATT not logged, so level hover cannot be isolated from the window"))
+        return
+    t = rcou["t"].values
+    roll = np.interp(t, att["t"].values, att["Roll"].values)
+    pitch = np.interp(t, att["t"].values, att["Pitch"].values)
+    level = (np.abs(roll) < LEVEL_DEG) & (np.abs(pitch) < LEVEL_DEG)
+    chunks = [c for c in hover_chunks(log) if c.t1 > w.t0 and c.t0 < w.t1]
+    if chunks:
+        inchunk = np.zeros(t.size, dtype=bool)
+        for c in chunks:
+            inchunk |= (t >= c.t0) & (t <= c.t1)
+        mask = level & inchunk
+        src = (f"{len(chunks)} hover chunk(s) (LOITER/ALT_HOLD/POSHOLD, sticks centred) with "
+               f"|roll|,|pitch| < {LEVEL_DEG:g} deg")
+    else:
+        mask = level
+        src = (f"level-attitude samples (|roll|,|pitch| < {LEVEL_DEG:g} deg; no LOITER/ALT_HOLD hover "
+               "chunk in the window)")
+    dt = float(np.median(np.diff(t))) if t.size > 1 else 0.0
+    seconds = float(mask.sum() * dt)
+    if seconds < HOVER_MIN_SECONDS or mask.sum() < 10:
+        sec.add(Result(name, SKIP, f"only {seconds:.1f} s of level hover in the window (need "
+                                   f"{HOVER_MIN_SECONDS:g} s) - the trim cannot be cross-checked"))
+        return
+    means = [float(rcou[c].values[mask].mean()) for c in chans if c in rcou.columns]
+    if len(means) != mix.n:
+        sec.add(Result(name, SKIP, "not every motor channel is in RCOU"))
+        return
+    th = trim_decomposition(means, mix)
+    axes = ("roll", "pitch", "yaw")
+    diffs = {ax: float(th[ax] - tr[ax]) for ax in axes}
+    worst = max(abs(d) for d in diffs.values())
+    sec.table("trim_hover", ["axis", "whole window (us)", "level hover (us)", "difference (us)"],
+              [[ax, round(tr[ax], 1), round(th[ax], 1), round(diffs[ax], 1)] for ax in axes],
+              align=["l", "r", "r", "r"])
+    static = worst <= T["trim_hover_diff_us"]["warn"]
+    sec.add(_grade(worst, "trim_hover_diff_us", name=name,
+                   summary_fmt="largest axis difference {v} us between the whole window and level hover "
+                               "(warn {w}, fail {f}): "
+                               + ("static asymmetry - the trim is the same when the aircraft stops "
+                                  "translating" if static else
+                                  "the trim changes when the aircraft stops translating - a translation "
+                                  "artefact or wind, not a static CG/blade asymmetry")
+                               + "; pitch %+.1f -> %+.1f us, roll %+.1f -> %+.1f us over %.0f s of %s"
+                               % (tr["pitch"], th["pitch"], tr["roll"], th["roll"], seconds, src),
+                   window={ax: float(tr[ax]) for ax in axes}, hover={ax: float(th[ax]) for ax in axes},
+                   difference=diffs, seconds=seconds, samples=int(mask.sum()), source_samples=src))
+
+
 def _drive_normalised(log, w, esc, p, band=(20, 80)):
     """Per-ESC median of RPM / (duty x pack V) over the central fleet-duty band.
 
@@ -557,25 +685,125 @@ def _drive_normalised(log, w, esc, p, band=(20, 80)):
 
 # ----------------------------------------------------------------------- notch
 
+_NOTCH_MODES = {0: "Fixed", 1: "Throttle", 2: "RPM sensor", 3: "ESC telemetry", 4: "In-flight FFT"}
+
+
+def _fundamental_envelope(log, w, t, fund, sec):
+    """issue #9: the fleet fundamental over the window and each motor's median, as tables.
+    Returns (stats dict, per-motor spread %) or (None, None) when the window holds none."""
+    m = w.mask(t) & np.isfinite(fund)
+    ff = fund[m]
+    if ff.size < 10:
+        return None, None
+    stats = dict(min=float(ff.min()), p01=float(np.percentile(ff, 1)), median=float(np.median(ff)),
+                 p99=float(np.percentile(ff, 99)), max=float(ff.max()))
+    sec.table("fundamental", ["stat", "Hz"], [[k, round(v, 1)] for k, v in stats.items()])
+    esc = log.instances("ESC")
+    chans = motor_channels(log.params(), len(esc)) or []
+    rows, meds = [], []
+    for i, g in sorted(esc.items()):
+        gg = w.clip(g)
+        if gg is None or gg.empty or "RPM" not in gg.columns:
+            continue
+        hz = float(np.nanmedian(gg["RPM"])) / 60.0
+        meds.append(hz)
+        c = f"C{i + 1}"
+        rows.append([f"ESC{i}", f"M{chans.index(c) + 1}" if c in chans else "", round(hz, 1)])
+    spread = float((max(meds) - min(meds)) / np.mean(meds) * 100.0) if len(meds) > 1 and np.mean(meds) > 0 else 0.0
+    if rows:
+        sec.table("per_motor", ["esc", "motor", "median Hz"], rows)
+        sec.note(f"Measured fundamental over the window: min {stats['min']:.1f} | p01 {stats['p01']:.1f} | "
+                 f"median {stats['median']:.1f} | p99 {stats['p99']:.1f} | max {stats['max']:.1f} Hz. "
+                 f"Per-motor medians spread {spread:.1f} %.")
+    return stats, spread
+
+
+def _notch_recommendation(log, w, t, fund, stats, spread, sec):
+    """issue #9: a starting point for INS_HNTCH_* when the notch is disabled, from the
+    envelope the check already measured. Every value is justified by a number it holds."""
+    esc = log.instances("ESC")
+    n_ok, errs = 0, []
+    for i, g in sorted(esc.items()):
+        gg = w.clip(g)
+        if gg is None or gg.empty or "RPM" not in gg.columns:
+            continue
+        if float((gg["RPM"].values > 0).mean()) >= 0.95:
+            n_ok += 1
+        if "Err" in gg.columns and np.isfinite(gg["Err"]).any():
+            errs.append(float(np.nanmean(gg["Err"])))
+    tt = t[w.mask(t)]
+    gap_ms = float(np.max(np.diff(tt)) * 1000.0) if tt.size > 1 else float("nan")
+    freq = int(5 * np.floor(0.95 * stats["p01"] / 5.0))
+    bw = int(freq / 2)
+    opts = 2 if spread > 5.0 else 0
+    lo, hi = stats["p01"], stats["p99"]
+    rows = [
+        ["INS_HNTCH_MODE", 3, f"ESC telemetry: {n_ok}/{len(esc)} motors reporting RPM throughout, worst mean "
+                              f"Err {max(errs):.1f} %, max sample gap {gap_ms:.0f} ms"
+                              if errs else f"ESC telemetry: {n_ok}/{len(esc)} motors reporting RPM throughout, "
+                                           f"max sample gap {gap_ms:.0f} ms"],
+        ["INS_HNTCH_REF", 1, "RPM-driven: notch centre = REF x RPM/60 per harmonic"],
+        ["INS_HNTCH_FREQ", freq, f"floor just under the airborne p01 fundamental {stats['p01']:.1f} Hz "
+                                 "(0.95x, rounded down to 5 Hz); the notch never goes below this"],
+        ["INS_HNTCH_BW", bw, "FREQ/2, the wiki's 2:1 default"],
+        ["INS_HNTCH_HMNCS", 3, f"1st + 2nd harmonics: {lo:.0f}-{hi:.0f} Hz and {2 * lo:.0f}-{2 * hi:.0f} Hz "
+                               "over this flight's p01-p99"],
+        ["INS_HNTCH_ATT", 40, "dB, the default"],
+        ["INS_HNTCH_OPTS", opts, f"inter-motor spread {spread:.1f} % "
+                                 + ("> 5 %: per-motor notches (bit 1, dynamic harmonic)" if opts else
+                                    "<= 5 %: one notch per harmonic tracks them all")],
+    ]
+    sec.table("recommendation", ["param", "value", "why"], rows, align=["l", "r", "l"])
+    fg = _fastest_gyro_hz(log)
+    cannot = ["FCNS absent"]
+    if fg and fg / 2.0 < stats["median"]:
+        cannot.append(f"the fastest gyro source is {fg:.0f} Hz (Nyquist {fg / 2.0:.1f} Hz) < fundamental "
+                      f"{stats['median']:.0f} Hz, so no spectrum from this log can show the motor")
+    sec.note(f"Suggested starting point, not a verified setting. MODE=3 rests on ESC telemetry quality: "
+             f"{n_ok}/{len(esc)} motors reporting RPM throughout the window"
+             + (f", worst mean Err {max(errs):.1f} %" if errs else "") + f", max sample gap {gap_ms:.0f} ms. "
+             "Cannot be verified from this log: " + ", and ".join(cannot) + ". To prove it: set the "
+             "parameters above, INS_LOG_BAT_MASK=1, INS_LOG_BAT_OPT=4 (pre and post filter), fly 30-60 s "
+             "of hover, run `alog batchfft`, then set INS_LOG_BAT_MASK back to 0.")
+
+
 def check_notch(log, w):
     p = _Params(log)
+    enable = p.p.get("INS_HNTCH_ENABLE")
     mode = p.get("INS_HNTCH_MODE")
     fcns = log.instances("FCNS")
     t, fund = esc_fundamental(log)
     sec = Section("Harmonic notch", key="notch")
-    mode_names = {0: "Fixed", 1: "Throttle", 2: "RPM sensor", 3: "ESC telemetry", 4: "In-flight FFT"}
+    mode_name = _NOTCH_MODES.get(int(mode) if mode is not None else -1, '?')
     sec.note(f"INS_HNTCH_ENABLE={fmt(p.get('INS_HNTCH_ENABLE'))} "
-             f"MODE={fmt(mode)} ({mode_names.get(int(mode) if mode is not None else -1, '?')}) "
+             f"MODE={fmt(mode)} ({mode_name}) "
              f"FREQ={fmt(p.get('INS_HNTCH_FREQ'))} BW={fmt(p.get('INS_HNTCH_BW'))} "
              f"REF={fmt(p.get('INS_HNTCH_REF'))} HMNCS={fmt(p.get('INS_HNTCH_HMNCS'))}")
     if fund is None:
         sec.add(Result("notch", SKIP,
-                       "no ESC telemetry, so there is no ground truth to check the notch against"))
+                       "no ESC telemetry, so there is no ground truth to check the notch against"
+                       + (" (and INS_HNTCH_ENABLE=0: the notch is disabled anyway)" if enable == 0 else "")))
         return sec
     if not fcns:
-        sec.note("No FCNS messages: the applied notch centre frequency was not logged, so the "
-                 "notch cannot be verified. FTN1.PkAvg is the FFT's opinion, not the filter's setting.")
-        sec.add(Result("notch", SKIP, "FCNS not logged"))
+        # Disabled and not-logged used to be the same SKIP. They call for opposite actions:
+        # configure it, or fix the logging. And when it is disabled the check is holding
+        # exactly the numbers that set FREQ and BW, so it says them (issue #9).
+        stats, spread = _fundamental_envelope(log, w, t, fund, sec)
+        if enable is None:
+            why = ("INS_HNTCH_ENABLE not in the log and FCNS not logged: cannot tell a disabled notch from "
+                   "an unlogged one; nothing to verify")
+        elif int(enable) == 0:
+            why = ("harmonic notch DISABLED (INS_HNTCH_ENABLE=0): nothing was applied, so there is nothing "
+                   "to verify" + ("; measured envelope and a starting point below" if stats else ""))
+            if stats:
+                _notch_recommendation(log, w, t, fund, stats, spread, sec)
+        else:
+            why = (f"notch ENABLED (MODE={fmt(mode)} {mode_name}) but FCNS not logged: the applied centre "
+                   "frequency was never written, so the notch cannot be verified - enable notch logging "
+                   "(Copter LOG_BITMASK FTN bit) and fly again. FTN1.PkAvg is the FFT's opinion, not the "
+                   "filter's setting")
+        sec.add(Result("notch", SKIP, why))
+        p.note(sec)
         return sec
 
     rows = []
@@ -1845,7 +2073,7 @@ def run(log, names=None, window=None, method="auto", flight=None, hz_floor=None,
             continue
         try:
             sec = fn(log, w, **({} if fn is not check_motors else
-                                {k: v for k, v in kw.items() if k == "normalise"}))
+                                {k: v for k, v in kw.items() if k in ("normalise", "arm_mm")}))
         except Exception as exc:
             sec = Section(name, [Result(name, FAIL, f"check crashed: {type(exc).__name__}: {exc}",
                                         evidence=dict(exception=type(exc).__name__), source="dflog")],

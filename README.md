@@ -81,6 +81,7 @@ python alog.py info      flight.bin                 # identity, integrity, cover
 python alog.py integrity flight.bin                 # every structural and data-quality issue
 python alog.py all       flight.bin [--json]        # the standard battery
 python alog.py motors    flight.bin --window rpm    # one check; rpm = ESC-defined window
+python alog.py motors    flight.bin --arm-mm 151    # CG offset in millimetres (CG to front motor line)
 python alog.py hover     flight.bin                 # steady-hover chunks; --window hover uses one
 python alog.py fft       flight.bin --plot fft.png  # local FFT (scipy) of the best gyro source
 python alog.py fft       flight.bin --list-sources  # every transformable signal with its Nyquist
@@ -141,8 +142,8 @@ r    = spectral.analyse(log, window=w)  # Welch PSD + peaks in motor orders, or 
 | events, flight | EV/ERR/MSG decoded (subsystem names, prearm failures, crash, thrust loss), ever armed/flew, autotune outcome, lean vs ANGLE_MAX, uncommanded mode changes | LogAnalyzer TestEvents/TestAutotune/TestPitchRollCoupling, dronekit-la |
 | paramcheck, brownout | NaN parameters, in-flight parameter changes, learned hover throttle vs snapshot, still armed at log end | LogAnalyzer TestParams/TestBrownout |
 | vibe, imu | VIBE p95 and clip deltas; gyro bias, IMU health flags and counters, dual-IMU accel mismatch | ArduPilot wiki, LogAnalyzer TestIMUMatch |
-| motors | standing-trim decomposition through the SERVOn_FUNCTION channel map, RPM spread on medians with p05/p95, drive-normalised RPM (RPM per duty x volt: load vs drag), per-ESC temperature and spread, bidirectional DShot error rate, headroom against the MOT_SPIN_MAX ceiling, MOTB throttle limiting | measured, dronekit-la |
-| notch | `FCNS.CF` tracking against `ESC.RPM/60` (the notch as applied, not the FFT's opinion) | measured |
+| motors | standing-trim decomposition through the SERVOn_FUNCTION channel map, the CG offset it implies (% of arm, mm with --arm-mm) and the same trim over level hover (static asymmetry vs translation artefact), RPM spread on medians with p05/p95, drive-normalised RPM (RPM per duty x volt: load vs drag), per-ESC temperature and spread, bidirectional DShot error rate, headroom against the MOT_SPIN_MAX ceiling, MOTB throttle limiting | measured, dronekit-la |
+| notch | `FCNS.CF` tracking against `ESC.RPM/60` (the notch as applied, not the FFT's opinion); when the notch is disabled, the measured fundamental envelope and a starting point for INS_HNTCH_*; enabled-but-unlogged is a different SKIP | measured |
 | pid, gust | desired-vs-actual rate correlation split at 5 Hz, `Dmod` slew-limiter engagement, PID output limiting, attitude error, unrequested excursions per second | dronekit-la, measured |
 | ekf, estimates | XKF4 innovation ratios with the count over 1.0, solution-status flags, resets; ATT vs AHR2/XKF1 and baro vs EKF divergence | dronekit-la |
 | compass, power, gps, cpu | field magnitude/variation/health, motor interference, offset magnitudes; current-vs-throttle correlation, the current reading with every motor provably stopped (sensor zero offset), consumption and current at idle/hover/full throttle raw and offset-corrected, hover watts, board Vcc; sats, HDOP, fix availability, position jumps, glitch ERRs, the receiver's own HAcc/VAcc/SAcc accuracy estimates and fix rate from GPA; load, slow loops, free memory, internal errors | LogAnalyzer, dronekit-la, wiki, EKF3 GPS checks |
