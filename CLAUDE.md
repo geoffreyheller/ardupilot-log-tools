@@ -9,6 +9,9 @@ they must be taken over, and which plausible-looking conclusions are wrong.
 project-specific notes exist for the aircraft — this repo is vehicle-agnostic and holds no
 hardware baselines or tune state.
 
+`SKILLS.md` is the short path: one recipe per question (motor balance, notch, GPS, current
+sensor, before/after…) with the commands, the lines to read and the validation flight.
+
 ---
 
 ## 1. Start here

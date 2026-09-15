@@ -197,6 +197,7 @@ landed at order 0.990 and the second at 2.010.
 alog.py / plot_notch.py   thin launchers (python alog.py ...)
 RULES.md                  the contract: fail loudly, state the number, agents first
 CLAUDE.md                 the operating guide for an agent analysing a log
+SKILLS.md                 recipes: the commands, lines to read and validation flight for each common question
 AGENTS.md                 pointer for other agent frameworks
 dflog/
   parser.py               .bin reader + Diagnostics + on-disk cache (fails loudly)

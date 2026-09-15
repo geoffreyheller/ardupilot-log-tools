@@ -8,7 +8,10 @@ Read, in this order:
 1. **`RULES.md`** — the contract (fail loudly, state the number, agents first). Short.
 2. **`CLAUDE.md`** — the operating guide: which command to run first, how to pick the
    window, what to check every time, the pitfalls that have already produced wrong answers.
-3. **`reference/`** as needed — `integrity-codes.md` when a report shows a diagnostic,
+3. **`SKILLS.md`** — recipes: one per question (motor balance, notch, GPS, current sensor,
+   before/after…) with the commands, the lines to read, the decision and the validation
+   flight. Start here when you already know what you are asking.
+4. **`reference/`** as needed — `integrity-codes.md` when a report shows a diagnostic,
    `json-output.md` for the `--json` shape, `thresholds.md` for where a number came from.
 
 Before you touch a log:
