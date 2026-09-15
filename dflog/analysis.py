@@ -20,7 +20,8 @@ from __future__ import annotations
 import numpy as np
 
 from .checks import T, Result, PASS, WARN, FAIL, SKIP
-from .flight import EVENTS, airborne_window, esc_fundamental, events, flights, mode_timeline
+from .flight import (EVENTS, airborne_window, esc_fundamental, events, flights, mode_timeline,
+                     motors_stopped)
 from .frames import mix_for, trim_decomposition, motor_channels
 from .report import table, fmt, heading
 from .stats import band_split, corr, describe, pct_above, peak_hz
@@ -352,13 +353,19 @@ def check_motors(log, w, normalise=True):
     n = max(n, len(esc))
     mix = mix_for(p.get("FRAME_CLASS", 1), p.get("FRAME_TYPE", 1), n_motors=n, normalise=normalise)
     sec = Section("Motors and standing trim", key="motors", data=dict(mix=mix.label))
+    # Servo output -> motor, from SERVOn_FUNCTION. ESC instance i is servo output i+1, so
+    # the same map labels the ESC rows below with the motor each one drives.
+    chans = motor_channels(p.p, mix.n)
+    mapped = chans is not None
+    if not mapped:
+        chans = [f"C{i + 1}" for i in range(mix.n)]
+
+    def motor_of(esc_index):
+        c = f"C{esc_index + 1}"
+        return f"M{chans.index(c) + 1}" if c in chans else ""
 
     # --- per-motor RCOU and the trim decomposition
     if rcou is not None and not rcou.empty and n >= 3:
-        chans = motor_channels(p.p, mix.n)
-        mapped = chans is not None
-        if not mapped:
-            chans = [f"C{i + 1}" for i in range(min(n, mix.n))]
         means = [float(rcou[c].mean()) for c in chans if c in rcou.columns]
         if len(means) == mix.n:
             tr = trim_decomposition(means, mix)
@@ -389,9 +396,10 @@ def check_motors(log, w, normalise=True):
                                "non-identity map permutes the trim axes",
                                evidence=dict(assumed=True), source="dflog frames.motor_channels"))
 
-    # --- ESC RPM spread and error rate
+    # --- ESC RPM spread, drive-normalised RPM, temperature and error rate
     if esc:
-        rows, rpm_meds, err_means = [], [], []
+        drive = _drive_normalised(log, w, esc, p)
+        rows, rpm_meds, err_means, temps = [], [], [], {}
         for i, g in sorted(esc.items()):
             gg = w.clip(g)
             if gg is None or gg.empty:
@@ -402,10 +410,16 @@ def check_motors(log, w, normalise=True):
             err = describe(gg["Err"]) if "Err" in gg.columns else {}
             if err.get("mean") is not None and np.isfinite(err.get("mean", np.nan)):
                 err_means.append(err["mean"])
-            rows.append([f"ESC{i}", r.get("mean"), r.get("p50"), r.get("p50", np.nan) / 60.0,
-                         r.get("min"), r.get("max"), err.get("mean"), err.get("p95")])
+            tm = describe(gg["Temp"]) if "Temp" in gg.columns else {}
+            if tm.get("max") is not None and np.isfinite(tm["max"]) and tm["max"] > 0:
+                temps[i] = tm
+            rows.append([f"ESC{i}", motor_of(i), r.get("mean"), r.get("p50"), r.get("p50", np.nan) / 60.0,
+                         r.get("p05"), r.get("p95"), r.get("min"), r.get("max"),
+                         drive["per_esc"].get(i), tm.get("mean"), tm.get("max"),
+                         err.get("mean"), err.get("p95")])
         if rows:
-            sec.table("esc", ["esc", "RPM mean", "RPM median", "Hz", "RPM min", "RPM max",
+            sec.table("esc", ["esc", "motor", "RPM mean", "RPM median", "Hz", "RPM p05", "RPM p95",
+                              "RPM min", "RPM max", "RPM/(duty x V)", "Temp mean", "Temp max",
                               "Err% mean", "Err% p95"], rows)
             rpm_meds = np.array(rpm_meds, dtype=float)
             if np.isfinite(rpm_meds).all() and rpm_meds.mean() > 0:
@@ -413,13 +427,45 @@ def check_motors(log, w, normalise=True):
                 sec.add(_grade(spread, "rpm_spread_pct", name="RPM spread",
                                summary_fmt="{v}% across motors, on medians (warn {w}, fail {f})",
                                per_motor_median=list(np.round(rpm_meds, 1))))
+            if drive["per_esc"]:
+                vals = {(motor_of(i) or f"ESC{i}"): v for i, v in drive["per_esc"].items()}
+                arr = np.array(list(vals.values()), dtype=float)
+                dn = (arr.max() - arr.min()) / arr.mean() * 100 if arr.mean() > 0 else np.nan
+                lo_k = min(vals, key=vals.get)
+                hi_k = max(vals, key=vals.get)
+                sec.add(_grade(dn, "drive_norm_spread_pct", name="drive-normalised RPM spread",
+                               summary_fmt="{v}%% across motors on RPM/(duty x V) (warn {w}, fail {f}); "
+                                           "lowest %s %.1f, highest %s %.1f, duty band %.2f-%.2f"
+                                           % (lo_k, vals[lo_k], hi_k, vals[hi_k], *drive["band"]),
+                               per_motor=vals, duty_band=list(drive["band"]), voltage_source=drive["volt_src"],
+                               n_samples=drive["n"]))
+            else:
+                sec.add(Result("drive-normalised RPM spread", SKIP, drive["why"]))
+            if temps:
+                hottest = max(temps, key=lambda k: temps[k]["mean"])
+                means = np.array([t["mean"] for t in temps.values()])
+                sec.add(_grade(max(t["max"] for t in temps.values()), "esc_temp_c", name="ESC temperature",
+                               summary_fmt="hottest ESC peak {v} C (warn {w}, fail {f})",
+                               per_esc_max={f"ESC{i}": t["max"] for i, t in temps.items()}))
+                sec.add(_grade(float(means.max() - means.min()), "esc_temp_spread_c",
+                               name="ESC temperature spread",
+                               summary_fmt="{v} C between ESC means (warn {w}, fail {f}); hottest ESC%d (%s) "
+                                           "%.1f C mean" % (hottest, motor_of(hottest) or "unmapped",
+                                                            temps[hottest]["mean"]),
+                               per_esc_mean={f"ESC{i}": t["mean"] for i, t in temps.items()}))
+            else:
+                sec.add(Result("ESC temperature", SKIP, "ESC.Temp not logged or always 0 on this ESC"))
             if err_means:
                 sec.add(_grade(max(err_means), "esc_err_pct", name="bidir DShot error rate",
                                summary_fmt="worst motor {v}% (warn {w}, fail {f})"))
             sec.note("RPM spread alone is a poor statistic - it says the motors disagree but not how.\n"
-                     "The trim decomposition above is what separates a CG offset (pitch/roll) from a\n"
-                     "torque asymmetry (yaw). ESC instance i is servo output i+1, so it needs the same\n"
-                     "channel map before a motor's RPM is attributed to a corner.")
+                     "The trim decomposition above separates a CG offset (pitch/roll) from a torque\n"
+                     "asymmetry (yaw). RPM/(duty x V) - RPM per unit of electrical drive, taken over the\n"
+                     "central band of fleet duty so the motors are compared at comparable operating\n"
+                     "points - separates load from drag: a motor loaded harder by a CG offset is given\n"
+                     "more duty and turns proportionally faster, so it stays flat; a motor that is\n"
+                     "dragging (bearing, damaged blade) turns slower at the same drive, so it falls.\n"
+                     "ESC instance i is servo output i+1; the motor column applies the SERVOn_FUNCTION map.")
 
     # --- headroom against the MOT_SPIN_MAX ceiling
     if rcou is not None and not rcou.empty and n >= 3:
@@ -451,6 +497,62 @@ def check_motors(log, w, normalise=True):
                        evidence=dict(thlimit_min=lim), source="MOTB.ThLimit"))
     p.note(sec)
     return sec
+
+
+def _drive_normalised(log, w, esc, p, band=(20, 80)):
+    """Per-ESC median of RPM / (duty x pack V) over the central fleet-duty band.
+
+    duty = (RCOU.C<i+1> - SERVO_MIN) / (SERVO_MAX - SERVO_MIN); pack V from BAT.Volt, else
+    from ESC.Volt when the ESC reports one. Returns dict(per_esc={i: value}, band=(lo, hi),
+    volt_src, n, why) - `per_esc` empty and `why` set when it could not be computed.
+    """
+    out = dict(per_esc={}, band=(np.nan, np.nan), volt_src=None, n=0, why="")
+    rcou = w.clip(log.df("RCOU"))
+    if rcou is None or rcou.empty:
+        out["why"] = "RCOU not logged, so the duty each motor was given is unknown"
+        return out
+    t = rcou["t"].values
+    bat = log.instances("BAT")
+    volt, src = None, None
+    if bat:
+        g = bat[min(bat)]
+        if "Volt" in g.columns and len(g) > 1 and np.nanmedian(g["Volt"]) > 1.0:
+            volt, src = np.interp(t, g["t"].values, g["Volt"].values), "BAT.Volt"
+    duties, rpms, per_volt = {}, {}, {}
+    for i, g in sorted(esc.items()):
+        c = f"C{i + 1}"
+        if c not in rcou.columns or "RPM" not in g.columns or len(g) < 2:
+            continue
+        lo = float(p.get(f"SERVO{i + 1}_MIN", 1000.0))
+        hi = float(p.get(f"SERVO{i + 1}_MAX", 2000.0))
+        duties[i] = (rcou[c].values - lo) / max(hi - lo, 1.0)
+        rpms[i] = np.interp(t, g["t"].values, g["RPM"].values)
+        if volt is None and "Volt" in g.columns and np.nanmedian(g["Volt"]) > 1.0:
+            per_volt[i] = np.interp(t, g["t"].values, g["Volt"].values)
+    if not duties:
+        out["why"] = "no RCOU channel matches an ESC instance"
+        return out
+    if volt is None and len(per_volt) == len(duties):
+        src = "ESC.Volt"
+    elif volt is None:
+        out["why"] = "no pack voltage: BAT.Volt absent and ESC.Volt not reported, so drive cannot be normalised"
+        return out
+    fleet = np.mean([d for d in duties.values()], axis=0)
+    lo_b, hi_b = np.nanpercentile(fleet, band[0]), np.nanpercentile(fleet, band[1])
+    keep = (fleet >= lo_b) & (fleet <= hi_b)
+    for i in duties:
+        v = volt if volt is not None else per_volt[i]
+        d = duties[i]
+        ok = keep & (d > 0.02) & np.isfinite(v) & (v > 1.0) & np.isfinite(rpms[i])
+        if ok.sum() < 5:
+            continue
+        out["per_esc"][i] = float(np.median(rpms[i][ok] / (d[ok] * v[ok])))
+    out["band"] = (float(lo_b), float(hi_b))
+    out["volt_src"] = src
+    out["n"] = int(keep.sum())
+    if not out["per_esc"]:
+        out["why"] = "too few samples inside the duty band"
+    return out
 
 
 # ----------------------------------------------------------------------- notch
@@ -754,10 +856,104 @@ def check_compass(log, w):
 
 # ----------------------------------------------------------------------- power
 
+def _stopped_current(log, w, i, g, params, sec):
+    """issue #6: what the sensor reads with every motor provably stopped.
+
+    Measured over the whole log, outside the airborne window by definition - the window
+    is airborne and the motors are not stopped in it. Returns the offset (A) or None.
+    """
+    if "Curr" not in g.columns or len(g) < 2:
+        return None
+    t = g["t"].values
+    stopped = motors_stopped(log, t, params) & np.isfinite(g["Curr"].values)
+    cur = g["Curr"].values[stopped]
+    name = f"BAT{i} current with motors stopped"
+    if cur.size < 10:
+        sec.add(Result(name, SKIP,
+                       "no motors-stopped samples: ESC RPM 0 and every output at SERVO_MIN never "
+                       "coincided with a BAT record (the log opened with the motors turning, or "
+                       "RCOU/ESC are not logged), so the sensor's zero offset cannot be measured",
+                       source=T["curr_stopped_a"]["source"]))
+        return None
+    off, sd = float(cur.mean()), float(cur.std())
+    before = int((stopped & (t < w.t0)).sum())
+    after = int((stopped & (t > w.t1)).sum())
+    ev = dict(n=int(cur.size), sd=sd, before_window=before, after_window=after)
+    gg = w.clip(g)
+    if "CurrTot" in gg.columns and len(gg):
+        raw = float(gg["CurrTot"].iloc[-1] - gg["CurrTot"].iloc[0])
+        ev["consumed_mah"] = raw
+        ev["consumed_corrected_mah"] = raw - off * w.duration / 3600.0 * 1000.0
+    sec.add(_grade(off, "curr_stopped_a", name=name,
+                   summary_fmt="{v} A mean with every motor stopped (sd %.2f, n %d: %d before the window, "
+                               "%d after; warn {w}, fail {f}) - sensor zero offset plus avionics draw, "
+                               "and every current figure in this flight reads that much high"
+                               % (sd, cur.size, before, after), **ev))
+    return off
+
+
+def _current_bands(log, w, i, g, off, params, sec):
+    """issue #6: current at idle, hover and full throttle, raw and offset-corrected.
+
+    idle   - armed on the ground: outside the window, motors turning, CTUN.ThO <= 0.05
+    hover  - inside the window, |ThO - ThH| <= 0.04 (ThH: learned CTUN.ThH median, else
+             MOT_THST_HOVER)
+    full   - inside the window, ThO >= 0.95
+    """
+    ctun = log.df("CTUN")
+    col = "ThO" if "ThO" in ctun.columns else ("ThrOut" if "ThrOut" in ctun.columns else None)
+    if ctun.empty or col is None or "Curr" not in g.columns or len(g) < 2:
+        return
+    t = g["t"].values
+    tho = np.interp(t, ctun["t"].values, ctun[col].values)
+    if np.nanmax(tho) > 1.5:
+        tho = tho / 1000.0
+    cur = g["Curr"].values
+    volt = g["Volt"].values if "Volt" in g.columns else np.full(t.size, np.nan)
+    inw = w.mask(t)
+    stopped = motors_stopped(log, t, params)
+    thh = np.nan
+    if "ThH" in ctun.columns:
+        thh = float(np.nanmedian(w.clip(ctun)["ThH"]))
+    if not np.isfinite(thh) or thh <= 0:
+        thh = params.get("MOT_THST_HOVER", np.nan)
+    hov_lo, hov_hi = thh - 0.04, thh + 0.04
+    bands = [("idle", "<= 0.05, armed on the ground", ~inw & ~stopped & (tho <= 0.05)),
+             ("hover", f"{hov_lo:.2f}-{hov_hi:.2f} (ThH {thh:.3f})" if np.isfinite(thh) else "no hover throttle known",
+              inw & (np.abs(tho - thh) <= 0.04) if np.isfinite(thh) else np.zeros(t.size, dtype=bool)),
+             ("full throttle", ">= 0.95", inw & (tho >= 0.95))]
+    rows = []
+    o = off if off is not None else 0.0
+    for name, label, m in bands:
+        m = m & np.isfinite(cur)
+        n = int(m.sum())
+        if n < 5:
+            continue
+        raw = float(cur[m].mean())
+        corr = raw - o
+        vm = float(np.nanmean(volt[m])) if np.isfinite(volt[m]).any() else np.nan
+        watts = float(np.nanmean(volt[m] * (cur[m] - o))) if np.isfinite(vm) else np.nan
+        rows.append([name, label, n, raw, corr if off is not None else None, vm, watts])
+        if name == "hover":
+            sec.add(Result(f"BAT{i} hover power", PASS,
+                           f"{watts:.0f} W at hover (ThO {hov_lo:.2f}-{hov_hi:.2f}): {corr:.2f} A "
+                           + ("offset-corrected" if off is not None else "uncorrected (offset unknown)")
+                           + f" x {vm:.2f} V over {n} samples" if np.isfinite(watts) else
+                           f"{corr:.2f} A at hover over {n} samples (no voltage for watts)",
+                           evidence=dict(watts=watts, amps=corr, amps_raw=raw, volts=vm, n=n,
+                                         tho_band=[hov_lo, hov_hi], offset_a=off),
+                           source="BAT.Curr x BAT.Volt in the hover throttle band"))
+    if rows:
+        sec.table(f"bat{i}_bands", ["band", "ThO band", "n", "current (A)", "offset-corrected (A)",
+                                    "voltage (V)", "power (W)"], rows,
+                  align=["l", "l", "r", "r", "r", "r", "r"])
+
+
 def check_power(log, w):
     sec = Section("Power", key="power")
     bat = log.instances("BAT")
     ctun = w.clip(log.df("CTUN"))
+    params = _Params(log)
     for i, g in sorted(bat.items()):
         gg = w.clip(g)
         if gg is None or gg.empty:
@@ -767,9 +963,14 @@ def check_power(log, w):
         sec.table(f"bat{i}", ["series", "min", "mean", "max"],
                   [[f"BAT{i} voltage (V)", v.get("min"), v.get("mean"), v.get("max")],
                    [f"BAT{i} current (A)", c.get("min"), c.get("mean"), c.get("max")]])
+        off = _stopped_current(log, w, i, g, params.p, sec)
+        _current_bands(log, w, i, g, off, params, sec)
         parts = []
         if "CurrTot" in gg.columns and len(gg):
-            parts.append(f"Consumed: {gg['CurrTot'].iloc[-1] - gg['CurrTot'].iloc[0]:.0f} mAh")
+            raw = gg['CurrTot'].iloc[-1] - gg['CurrTot'].iloc[0]
+            parts.append(f"Consumed: {raw:.0f} mAh"
+                         + (f" (offset-corrected {raw - off * w.duration / 3600.0 * 1000.0:.0f} mAh, "
+                            f"removing {off:.2f} A over {w.duration:.0f} s)" if off is not None else ""))
         if "Res" in gg.columns and np.isfinite(gg["Res"]).any():
             parts.append(f"ArduPilot internal resistance estimate BAT.Res: {np.nanmean(gg['Res']) * 1000:.1f} mOhm")
         if ctun is not None and not ctun.empty and "ThO" in ctun.columns and "Curr" in gg.columns:
@@ -818,7 +1019,10 @@ def check_power(log, w):
     # (logged > charger means the sensor reads high, so PERVLT must come DOWN, not up)
     sec.note("Absolute current scale is only trustworthy after a charger cross-check:\n"
              "fly a pack, note logged CurrTot mAh, recharge and read the mAh put back, then\n"
-             "BATT_AMP_PERVLT_new = BATT_AMP_PERVLT * (charger / logged).")
+             "BATT_AMP_PERVLT_new = BATT_AMP_PERVLT * (charger / logged). Fix the zero offset\n"
+             "first (BATT_AMP_OFFSET, from the reading with every motor stopped): a scale\n"
+             "correction on top of an offset is wrong at every current but one.")
+    params.note(sec)
     return sec
 
 

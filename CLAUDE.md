@@ -174,7 +174,10 @@ and `--flight` explicitly when it complains; do not read the table until it stop
   agreement.
 - **motors** — per-motor RCOU and RPM through the **SERVOn_FUNCTION channel map**, then the
   trim decomposition (§5). A standing imbalance contaminates every tuning conclusion drawn
-  from the same log, so clear it first.
+  from the same log, so clear it first. The ESC table carries p05/p95 RPM (min and max are
+  single spin-up samples), each ESC's temperature, and **RPM/(duty × V)** — RPM per unit
+  of drive, which separates *loaded harder* from *dragging*: a CG offset leaves it flat
+  while raw RPM spread reads 10 %; a bad bearing drops it and nothing else shows it.
 - **notch** — `FCNS.CF` against `ESC.RPM/60`. Not `FTN1.PkAvg` — see §6.
 - **pid, gust** — desired-vs-actual rate correlation **split at 5 Hz**: low-frequency error
   is a gain problem; high-frequency error is gyro noise reaching the controller, a filter
@@ -186,7 +189,9 @@ and `--flight` explicitly when it complains; do not read the table until it stop
 - **compass, power, gps, cpu** — field magnitude and variation, motor interference as the
   throttle correlation; **battery current correlated against throttle** (a flat reading is a
   wiring or pin fault, not a calibration error — a wrong `BATT_AMP_PERVLT` changes the
-  magnitude, never the correlation); sats, HDOP, fix availability, position jumps, and the
+  magnitude, never the correlation), the **current reading with every motor provably
+  stopped** (the sensor's zero offset: one aircraft read 12.3 A, so its 19 A hover was 7 A),
+  and current at idle / hover / full throttle raw and offset-corrected with hover watts; sats, HDOP, fix availability, position jumps, and the
   receiver's **own accuracy estimates** `GPA.HAcc`/`VAcc`/`SAcc` — HDOP is geometry, HAcc
   is metres, and HAcc is what answers "is the GPS better than it was"; CPU
   load, slow loops, free memory, internal errors.

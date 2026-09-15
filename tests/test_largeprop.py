@@ -25,7 +25,7 @@ except ImportError:
     import _shim as pytest
 
 from dflog import Log, airborne_window, flights, hover_chunks       # noqa: E402
-from dflog.analysis import check_gps                                  # noqa: E402
+from dflog.analysis import check_gps, check_motors, check_power       # noqa: E402
 from dflog.cli import main                                            # noqa: E402
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "largeprop-quad.bin")
@@ -136,6 +136,55 @@ def test_gps_accuracy_figures_from_gpa():
     assert g1["HAcc med (m)"] is None
     assert rs["GPS1 horizontal accuracy"].status == "SKIP"
     assert "not report" in rs["GPS1 horizontal accuracy"].summary
+
+
+# --------------------------------------------------------------- issue #6
+
+def test_current_sensor_reads_12_amps_with_the_motors_stopped():
+    """BATT_MONITOR=9 (ESC telemetry) on this aircraft reports ~12.3 A with every motor
+    provably stopped. Every current figure in the flight is that much high: hover draw
+    is ~7 A, not the ~19 A the check used to report."""
+    w = airborne_window(LOG, method="ev")
+    sec = check_power(LOG, w)
+    rs = _results(sec)
+    r = rs["BAT0 current with motors stopped"]
+    assert r.status == "FAIL"
+    assert r.evidence["value"] == pytest.approx(12.32, abs=0.15), r.evidence
+    assert r.evidence["n"] > 100
+    t = _table(sec, "bat0_bands")
+    rows = {row[0]: dict(zip(t["columns"], row)) for row in t["rows"]}
+    hover = rows["hover"]
+    assert hover["current (A)"] == pytest.approx(19.3, abs=1.5)
+    assert hover["offset-corrected (A)"] == pytest.approx(7.0, abs=1.5)
+    assert 150.0 < hover["power (W)"] < 230.0
+    # full throttle is a 5-sample band here (the 63 A in the issue was the single max)
+    full = rows["full throttle"]
+    assert full["n"] >= 5 and 45.0 < full["current (A)"] < 65.0
+    assert full["offset-corrected (A)"] == pytest.approx(full["current (A)"] - 12.32, abs=0.2)
+    assert rs["BAT0 hover power"].status == "PASS"
+    assert rs["BAT0 hover power"].evidence["watts"] == pytest.approx(169.0, abs=5.0)
+
+
+# --------------------------------------------------------------- issue #7
+
+def test_drive_normalised_rpm_is_flat_while_raw_spread_is_not():
+    """The raw RPM spread on this aircraft is ~12 %: pure load asymmetry from a CG
+    offset. Per unit of drive the four motors sit within ~2.5 % - no motor is dragging."""
+    sec = check_motors(LOG, airborne_window(LOG, method="ev"))
+    rs = _results(sec)
+    assert rs["RPM spread"].evidence["value"] > 10.0
+    dn = rs["drive-normalised RPM spread"]
+    assert dn.status == "PASS", dn.summary
+    assert dn.evidence["value"] == pytest.approx(2.4, abs=0.8), dn.evidence
+    t = _table(sec, "esc")
+    rows = {r[0]: dict(zip(t["columns"], r)) for r in t["rows"]}
+    for i in range(4):
+        row = rows[f"ESC{i}"]
+        assert row["RPM p05"] < row["RPM median"] < row["RPM p95"]
+        assert 30.0 < row["Temp mean"] < 35.0 and row["Temp max"] <= 37.0
+    assert rows["ESC0"]["motor"] == "M3"           # SERVO1_FUNCTION=35
+    assert rs["ESC temperature"].status == "PASS"
+    assert rs["ESC temperature spread"].status == "PASS"
 
 
 if __name__ == "__main__":

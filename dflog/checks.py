@@ -132,11 +132,29 @@ T = {
     "free_mem_bytes": _t(20000, 5000, MEAS, "PM.Mem minimum free bytes; scripting and logging need headroom"),
     "brownout_alt_m": _t(1.0, 3.0, LA, "TestBrownout: still armed at log end with BAlt above this = truncated in flight"),
 
+    # A current sensor read with every motor provably stopped (ESC RPM 0 and every output
+    # at SERVO_MIN) is the sensor's zero offset plus the avionics draw. A healthy sensor on
+    # the development logs read 0.00 A; a faulty ESC-telemetry sum read 12.3-12.8 A and
+    # put every figure in the flight that much high (issue #6).
+    "curr_stopped_a": _t(2.0, 5.0, MEAS, "BAT.Curr mean with every motor stopped, A: zero offset plus "
+                                         "avionics draw; a VTX and a GPS are ~1 A, not 5"),
+
     # --- motors ----------------------------------------------------------
     "rpm_spread_pct": _t(3.0, 8.0, MEAS, "(max-min)/mean of per-motor mean RPM, airborne"),
     "trim_us":        _t(10.0, 25.0, MEAS, "|roll/pitch/yaw trim| in us of motor output"),
     "esc_err_pct":    _t(5.0, 15.0, MEAS, "ESC.Err, bidirectional DShot error rate percent"),
     "motor_headroom": _t(0.90, 0.97, DLA, "peak output as a fraction of the MOT_SPIN_MAX ceiling"),
+    # RPM per unit of electrical drive, RPM / (duty x pack V), compared across motors over
+    # the central duty band. Load asymmetry (a CG offset) leaves it flat; a dragging
+    # motor drops it. Healthy 1.7-2.4 % on three flights of a 10-inch quad (issue #7).
+    "drive_norm_spread_pct": _t(3.0, 6.0, MEAS, "(max-min)/mean of per-motor median RPM/(duty x V) over the "
+                                                "p20-p80 fleet duty band"),
+    # ESC temperature: vendor thermal protection engages near 100-140 C (BLHeli_32 default
+    # 140 C); healthy development aircraft ran 15-50 C. One hot ESC in a set is a finding
+    # on its own, hence the spread.
+    "esc_temp_c":        _t(80.0, 100.0, f"ESC vendor thermal-protection limits; {MEAS}",
+                            "max ESC.Temp over the window, C"),
+    "esc_temp_spread_c": _t(10.0, 20.0, MEAS, "max - min of per-ESC mean ESC.Temp, C; healthy 1-5 C"),
 
     # --- attitude / tune -------------------------------------------------
     "att_err_deg":    _t(5.0, 10.0, DLA, "|actual - desired| roll/pitch in degrees"),

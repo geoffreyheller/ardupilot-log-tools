@@ -108,6 +108,14 @@ LA also flags `ERR` Subsys 11 / ECode 2 as an outright glitch → FAIL.
 | `vcc_spread` | 0.3 V | 0.5 V | LA `TestVCC` |
 | `cpu_load` | 60 % | 80 % | MEAS — `PM.Load` ÷ 10 |
 | `cpu_slow_pct` | 6 % | 10 % | LA `TestPerformance` — `NLon/NL`; LA also fails on >6 slow lines |
+| `curr_stopped_a` | 2.0 A | 5.0 A | MEAS — `BAT.Curr` mean with every motor provably stopped (every ESC `RPM` 0 and every motor output at `SERVO_MIN`): the sensor's zero offset plus the avionics draw. A healthy sensor read 0.00 A on every development log; a faulty ESC-telemetry sum read 12.3–12.8 A and put every figure in the flight that much high (issue #6). A VTX and a GPS are ~1 A, not 5 |
+
+The motors-stopped measurement lives outside the airborne window by definition; the
+power check reads the whole log for it and says how many samples came before and after
+the window. It then reports consumption raw and offset-corrected, and current at idle,
+hover (`ThH` ± 0.04) and full throttle (`ThO` ≥ 0.95), raw and corrected, with hover power
+in watts. Fix `BATT_AMP_OFFSET` before `BATT_AMP_PERVLT`: a scale correction on top of an
+offset is wrong at every current but one.
 
 DLA's `battery` low threshold is 15 % remaining.
 
@@ -118,6 +126,13 @@ DLA's `battery` low threshold is 15 % remaining.
 | `trim_us` | 10 | 25 | MEAS — `\|roll/pitch/yaw trim\|` in µs; healthy baseline yaw −5.0, bent-prop yaw +22.6 |
 | `esc_err_pct` | 5 % | 15 % | MEAS — a healthy bidirectional-DShot link runs 2.7–3.3 % steadily with no ill effect |
 | `motor_headroom` | 0.90 | 0.97 | DLA-style — p99.5 output as a fraction of the `MOT_SPIN_MAX` ceiling |
+| `drive_norm_spread_pct` | 3 % | 6 % | MEAS — (max−min)/mean of per-motor median `RPM / (duty × pack V)` over the p20–p80 band of fleet duty. Healthy 1.7–2.4 % on three flights of a 10-inch quad whose *raw* RPM spread was 10–12 % (issue #7): load asymmetry from a CG offset leaves this flat, a dragging motor drops it |
+| `esc_temp_c` | 80 °C | 100 °C | ESC vendor thermal-protection limits (BLHeli_32 default 140 °C) and MEAS — max `ESC.Temp`; healthy development aircraft ran 15–50 °C |
+| `esc_temp_spread_c` | 10 °C | 20 °C | MEAS — max−min of per-ESC mean `ESC.Temp`; healthy 1–5 °C. One hot ESC in a set of four is a finding on its own |
+
+The ESC table also carries p05/p95 RPM (min and max are single samples dominated by
+spin-up and brief saturation) and the motor each ESC drives through the `SERVOn_FUNCTION`
+map, since `ESC[i]` is servo output `i+1`.
 
 DLA's `motorbalance` uses a PWM delta of warn 50 / fail 100 µs measured only while pitch,
 roll and yaw rates are all below 1 °/s for ≥100 ms — a stricter "stable" gate than
