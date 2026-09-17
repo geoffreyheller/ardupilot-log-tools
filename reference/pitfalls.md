@@ -296,3 +296,26 @@ successful parse, and reports `CACHE_REBUILT` when it had to discard one.
 
 **Windows consoles are not UTF-8 by default.** A report containing `µ` or `→` raises
 `UnicodeEncodeError` half-way through unless stdout is reconfigured; `alog` does this.
+
+**An ESC's current-sense output does not see the avionics.** `BAT.Curr` reads ~0 with every
+motor stopped while the flight controller, GPS, receiver and video are all powered — so any
+comparison against a charger, a watt meter or a clamp is comparing two different boundaries.
+This is what makes the wiki's charger-mAh calibration fail to converge: its error term scales
+with total pack-connected time, which nobody records. Measure the idle draw in the same
+configuration and subtract it. Full account, and the method that does work, in
+`reference/current-sensor-calibration.md`.
+
+**A current-sensor scale measured props-off is not the scale at hover.** Unloaded motor
+current saturates at roughly a fifth of hover current, repeats to only ±20 %, and the shunt
+amplifier is least linear down there — one aircraft measured an effective scale of 39.3 at
+2.8 A and 35.9 at 4.8 A. Calibrate with props on at the motor-test percentage matching the
+hover `RCOU` duty, where the thrust produced is just the aircraft's own weight.
+
+**A subset cannot exceed the total.** If the flight controller reports more motor-path
+current than a whole-aircraft meter measures, the flight controller over-reads. It needs no
+model and no assumptions, and it is the fastest way to catch a bad `BATT_AMP_PERVLT`.
+
+**Regressing pack voltage on current alone conflates sag with state of charge.** Voltage
+falls as charge is consumed, not only as current rises, and over a flight that trend
+dominates. Fit `V = OCV₀ − α·Q − R·I` instead: on one flight the naive slope was 40.0 mΩ and
+the corrected one 33.8 mΩ, and the naive figure had been used to argue a sensor read 2× high.

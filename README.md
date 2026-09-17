@@ -217,6 +217,8 @@ reference/
   thresholds.md           every threshold and where it came from
   param-decodings.md      device IDs, bitmasks, enums, derived quantities
   pitfalls.md             mistakes made, so they need not be made again
+  current-sensor-calibration.md
+                          how to calibrate BATT_AMP_PERVLT, and the four methods that don't work
   existing-tools.md       audit of the open-source ecosystem and what was taken from it
 templates/                report template
 tests/
