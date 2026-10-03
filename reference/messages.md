@@ -16,7 +16,7 @@ hardcoding: `BarAlt`→`BAlt`, `ThrOut`→`ThO`, `CRate`→`CRt`, `Chan1`/`Ch1`�
 |---|---|---|
 | `ATT` | `DesRoll Roll DesPitch Pitch DesYaw Yaw ErrRP ErrYaw AEKF` | degrees. Attitude error = actual − desired. |
 | `RATE` | `RDes R ROut PDes P POut YDes Y YOut ADes A AOut AOutSlew` | **deg/s, not rad/s.** `*Out` is the controller output, normalised to ±1.0. |
-| `ANG` | `DesRoll Roll DesPitch Pitch DesYaw Yaw` | angle-controller view, higher rate than `ATT` on some builds |
+| `ANG` | `DesRoll Roll DesPitch Pitch DesYaw Yaw Dt` | degrees, written by the attitude controller **every loop** with `LOG_BITMASK` bit 0 (master `AC_AttitudeControl/LogStructure.h`: `Qfffffff`, units `sddddhhs`); `Des*` is the *shaped* target (already jerk-limited), `Dt` the loop interval. `ATT` stays at 10 Hz from AHRS; prefer `ANG` when present, fall back to `ATT`. |
 | `PIDR` `PIDP` `PIDY` `PIDA` | `Tar Act Err P I D FF DFF Dmod SRate Flags` | per-axis PID term breakdown. `PIDA` is the altitude/throttle PID. |
 | `CTUN` | `ThI ABst ThO ThH DAlt Alt BAlt DSAlt SAlt TAlt DCRt CRt` | `ThO` = throttle out (0–1), `ThH` = learned hover throttle, `BAlt` = barometric altitude (m), `CRt` = climb rate (cm/s) |
 | `MOTB` | `LiftMax BatVolt ThLimit ThrAvMx ThrOut FailFlags` | see FailFlags below |
@@ -39,6 +39,29 @@ not 2000 µs. With the usual 1000/2000 and `MOT_SPIN_MAX=0.95` that is 1950 µs.
 
 ---
 
+## AutoTune, SysID and QuickTune
+
+| message | fields | notes |
+|---|---|---|
+| `ATUN` | `Axis TuneStep Targ Min Max RP RD SP ddt` | one row per AutoTune twitch, `QBBfffffff`, units `s--ddd---o`. Written in `UPDATE_GAINS` **before** the rule runs, so `RP/RD/SP` are the gains **tested** in that twitch; the rule's change shows in the next row. `Axis` 0 roll, 1 pitch, 2 yaw(E) — `RD` is then FLTE in Hz — 3 yaw-D. `TuneStep` 0 RATE_D_UP, 1 RATE_D_DOWN, 2 RATE_P_UP, 4 ANGLE_P_DOWN, 5 ANGLE_P_UP. `Targ/Min/Max` are ×0.01 in the log → deg (angle steps) or deg/s (rate steps). **`ddt` is `test_accel_max` unscaled, cdeg/s², despite the `o` unit tag**, and is overwritten per test, so `ATC_ACC_*_MAX = max(floor, ddt of the last ANGLE_P_UP row) / 100`. Aborted twitches write no row. `dflog.tune_atun` reconstructs sessions from it. |
+| `ATDE` | `Angle Rate` | deg, deg/s (`Qff`, units `sdk`), every loop while a twitch is executing; direction-normalised (positive = twitch direction). The rate extremes of an angle twitch, which `ATUN` does not carry, come from the `ATDE` burst that ends at the row. |
+| `SIDS` | `Ax Mag FSt FSp TFin TC TR TFout` | SysID setup, written once when the mode starts: `SID_AXIS`, magnitude, start / stop Hz, fade-in, constant, record and fade-out seconds (`reference/pid-tuning-sources.md` §5). |
+| `SIDD` | `Time Targ F Gx Gy Gz Ax Ay Az` | SysID data at loop rate (÷1 with `LOG_BITMASK` bits 0+1, ÷2 with bit 0, ÷4 with bit 1, ÷8 otherwise): `Targ` the chirp sample, `F` the instantaneous Hz, `Gx..` deg/s from raw delta-angle, `Ax..` m/s². For `SID_AXIS` 10–12 the input is `RATE.xOut` and the output `SIDD.Gx/Gy/Gz`. |
+| `QUIK` | `SRate Gain Param` | written by the `VTOL-quicktune.lua` applet (`logger.write('QUIK','SRate,Gain,Param','ffn', ...)`): the slew rate it is watching, the gain it just set and the parameter name (`ATC_RAT_RLL_D` …). Present only when the applet ran; the same `SRate` is in `PIDx` on every log. |
+
+**`ATUN` and `ATDE` (and `RATE`, `PIDx` during a twitch) are written regardless of
+`LOG_BITMASK`.** `SIDD` and `ANG`/`RATE`/`PIDx` outside AutoTune need bit 0 for loop rate;
+without it `PIDx`/`RATE`/`ATT` are 10 Hz, which cannot show a rate loop
+(`reference/pid-tuning-sources.md` §2.1).
+
+**The rate backoff is in the log.** `AC_AutoTune` backs off P and D when RATE_P_UP
+*completes*, so the ANGLE_P_DOWN / ANGLE_P_UP rows already carry the backed-off `RP/RD`:
+ANGLE rows' `RP` ÷ last RATE_P_UP `RP` is the rate backoff the firmware applied (0.75 with
+`AUTOTUNE_GMBK` 0.25 on 4.7+, 1.0 on 4.3–4.6). Only the angle-P backoff needs the
+firmware branch (`reference/pid-tuning-sources.md` §1.6).
+
+---
+
 ## Motors, ESC and the harmonic notch
 
 | message | fields | notes |
@@ -46,6 +69,7 @@ not 2000 µs. With the usual 1000/2000 and `MOT_SPIN_MAX=0.95` that is 1950 µs.
 | `ESC` | `Instance RPM RawRPM Volt Curr Temp CTot MotTemp Err` | per-motor. `Err` is the bidirectional-DShot error rate in **percent**. `Curr` is often 0 on 4-in-1 ESCs that expose only a combined analog output. |
 | `EDT2` | `Instance Stress MaxStress Status` | Extended DShot Telemetry; needs `SERVO_DSHOT_ESC=4` |
 | `FCNS` | `I CF HF` | **the frequency the notch actually applied.** `CF` = centre, `HF` = 2nd harmonic. Logged every 100 ms. |
+| `FCN` | `I NF CF1..CF6 HF1..HF6` | the applied centres when the notch runs one filter per motor (`INS_HNTCH_OPTS` bit 1); **no `FCNS` is written then.** `NF` = centres in use, `CFk` follows ESC k-1's RPM/60 (0.15 % median on Brisket, 2026-09-30); unused slots and stopped motors read NaN. |
 | `FTN1` | `PkAvg PkMax BwAvg SnX SnY SnZ ...` | the in-flight FFT's *opinion*. Only drives the notch when `INS_HNTCH_MODE=4`. |
 | `FTN2` `FTNS` | per-axis FFT detail | large; costs real log space |
 | `ISBH` | `N type instance mul smp_cnt SampleUS smp_rate` | batch-IMU window header. `type` 0=accel 1=gyro; value = raw / `mul`. |

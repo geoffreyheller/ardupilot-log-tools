@@ -24,6 +24,7 @@ python alog.py motors flight.bin --window rpm
 python alog.py hover flight.bin              # steady-hover chunks; --window hover uses one
 python alog.py fft   flight.bin --plot fft.png
 python alog.py compare before.bin after.bin  # like-for-like, identical code both sides
+python alog.py tune  flight.bin [after.bin]  # PID gains with confidence, or an ERROR block naming what to log (§8)
 python alog.py all   flight.bin --flight 2   # one flight of a log that holds several
 python alog.py all   flight.bin --flight all # every flight, one block each
 python alog.py schema                        # the JSON contract, checks, thresholds
@@ -186,6 +187,17 @@ and `--flight` explicitly when it complains; do not read the table until it stop
   is a gain problem; high-frequency error is gyro noise reaching the controller, a filter
   problem. **Do the filter work before touching a rate gain.** `Dmod` staying at 1.000
   means the D-term slew limiter never engaged — no oscillation onset anywhere.
+- **tune** — recommended `ATC_RAT_x_P/I/D`, `ATC_ANG_x_P`, `ATC_ACC_x_MAX` (yaw `FLTE`)
+  per axis with a **confidence in [0, 1] from named components**, or a refusal (§8).
+  Three evidence tiers, fused per parameter in order of trust: **A** reconstructs an
+  AutoTune session from `ATUN`/`ATDE`/`MSG` (`autotune-log`); **B** identifies the
+  rate-loop plant from `PIDx.Tar/Act` and the plant input and runs AutoTune's own twitch
+  search on it in software (`virtual-autotune`), with 6 dB / 45° margins and ceilings;
+  **C** scores the PID-Analyzer step response and QuickTune's `SRate` oscillation
+  ceiling (`ceiling`, `step-rules`). Tier **D** checks the parameter set against itself
+  (I/P, FLTD/FLTT vs `INS_GYRO_FILTER/2`, AC_PID ranges) and never produces a gain.
+  Needs `LOG_BITMASK` bit 0: a 10 Hz log is `SKIP` here with the `ERROR:` block as the
+  section's first note, and exit 3 from `alog tune`.
 - **ekf, estimates** — `XKF4` innovation ratios, specifically the **count of samples above
   1.0**; a rising count across flights is the signal even when the mean improves. Solution
   status flags. ATT vs AHR2 / XKF1 and baro vs EKF divergence.
@@ -244,10 +256,15 @@ Microseconds are not actionable, so the check converts the standing trim into a 
 from the per-motor RPM medians: thrust ∝ RPM², `r = (mean front / mean rear)²`, offset
 `(r − 1)/(r + 1)` of the fore-aft arm, positive forward; `--arm-mm` (CG to the front motor
 line) makes it millimetres. It then **re-measures the trim over level hover** (hover chunks
-with |roll|, |pitch| < 3°) and reports both: identical figures are a static asymmetry, a
-trim that vanishes when the aircraft stops translating is a forward-flight artefact or
-wind (`trim vs level hover`). That distinction is the whole diagnosis; read it before
-moving a battery.
+with |roll|, |pitch| < 3°) and reports both: a trim that vanishes when the aircraft stops
+translating is a forward-flight artefact (`trim vs level hover`). Identical figures are
+**not** proof of a CG offset: holding position in a steady breeze is still flying through
+the air, and a breeze reads exactly like CG in level hover. On 2026-09-30 Brisket's pitch/roll
+trim went 20.6/12.7 → 35.2/0.2 µs between two flights at nearly the same heading with the
+battery never touched. `trim vs heading` fits the level-hover trim per 45° heading bin as a
+part fixed to the airframe (CG, blade, mount) plus a part fixed to the earth (the breeze);
+it needs three bins spanning 90° and otherwise says the two cannot be told apart. Hover
+~20 s facing each of N, E, S, W before moving a battery on this evidence.
 
 > **Convention.** Mix factors are normalised to unit peak, matching ArduPilot's
 > `normalise_rpy_factors()`. Some older analyses use raw `cos()` factors (±0.7071 on a
@@ -277,7 +294,9 @@ starting point — `MODE=3` justified by the ESC telemetry quality it measured, 
 under the airborne p01, `BW = FREQ/2`, `HMNCS=3`, `OPTS=2` when the motors spread more than
 5 % — together with what that log cannot verify and the batch-logging flight that would.
 Do not re-derive those numbers through the Python API; they are in the report. A notch
-that is *enabled* but has no `FCNS` is a different SKIP: fix the logging, not the config.
+that is *enabled* but has no `FCNS` is a different SKIP: fix the logging, not the config. The
+exception is a per-motor notch (`INS_HNTCH_OPTS` bit 1): it writes `FCN.CF1..CFn` instead, one
+centre per ESC, and the check reads those against each ESC's own RPM/60.
 
 For the post-filter proof: `INS_LOG_BAT_MASK=1`, `INS_LOG_BAT_OPT=4` (pre **and** post
 filter), fly 30–60 s, then **set the mask back to 0** — batch logging roughly doubles the
@@ -320,7 +339,74 @@ What the tool adds is honesty about the input:
 
 ---
 
-## 8. Thresholds
+## 8. PID tuning needs a fast-logged flight
+
+`alog tune LOG [LOG ...]` (and the `tune` section of `alog all`) recommends gains per axis
+and parameter, each with `current`, `recommended`, `change %`, `confidence`, `method` and
+`why`, or refuses. Confidence is `prior × adequacy × excitation × consistency × agreement`
+with the prior per method (`autotune-log` 1.0, `virtual-autotune` 0.8, `ceiling` 0.7,
+`step-rules` 0.5); ≥ 0.7 recommend, 0.4–0.7 "validate before applying", < 0.4 the
+recommended column reads **`withheld`** and the value lives in the evidence only. Tier C's
+`step-rules` are capped at 0.39 — AutoTune's overshoot/bounce criteria apply to a twitch
+flown with test gains, not to the final loop the log shows — so they are always withheld
+until calibrated on a real fast-logged flight. Ceilings always apply. A value above the
+**margin ceiling** (the largest P or D whose full loop keeps PM ≥ 45° and GM ≥ 6 dB on the
+identified plant) is clipped to that ceiling. A value above an **oscillation ceiling** (SRate
+or a limit cycle seen in the log) is clipped to 0.4 × ceiling, QuickTune's margin. The rate
+set as applied is then re-checked against the same margins and withheld if it fails, or
+if those margins are **extrapolated**: a crossover above the coherent band, or a gain margin
+read above it on a fit whose `tau2`/delay sit at their bounds (Brisket's yaw, coherent
+0.5–3.5 Hz, got P 0.18 → 0.48 at confidence 0.70 on a "36 dB" margin at 21 Hz before this
+gate). A change inside **±5 %** (`fuse_deadband_pct`, the same aircraft's flight-to-flight
+variation) reads `unchanged` with the tier's value in the evidence — except for rate gains
+while the current loop misses the margins, where a small change is the correction (pitch
+−4.6 % took PM 43.1° → 46.2°). `I` follows `P` by AutoTune's ratio unless the log's own ratio
+was deliberately different. The recipe, the tables to read and the decision rule are
+`SKILLS.md` Skill 7.
+
+**The standard `LOG_BITMASK` logs `PIDx`, `RATE` and `ATT` at 10 Hz**, which cannot show
+a rate loop whose filters sit at 20–40 Hz; every reference log this tool was built on is
+refused with `PID_RATE_TOO_LOW`. Before the tuning flight set these — the rows are
+`tune.LOGGING_REQUIREMENTS`, printed with the log's own values in every refusal:
+
+| parameter | required for a tuning log | why | tier |
+|---|---|---|---|
+| `LOG_BITMASK` | bits 0 (1) and 12 (4096) set | bit 0 ATTITUDE_FAST + bit 12 PID: loop-rate RATE/PID logging | B, C |
+| `LOG_FILE_RATEMAX` | 0 | a non-zero cap decimates the fast stream back down (0 or >= SCHED_LOOP_RATE) | B, C |
+| `LOG_BLK_RATEMAX` | 0 | same cap for the block backend (onboard-flash boards) | B, C |
+| `INS_LOG_BAT_MASK` | 0 | batch logging doubles the write rate; separate flight | B, C |
+| `LOG_FILE_BUFSIZE` | >= 64 | buffer for the doubled rate, KB; larger on boards that show LOG_GAP | B, C |
+| `LOG_DISARMED` | any | irrelevant; the window is airborne only | - |
+| `SCHED_LOOP_RATE` | as flown (400 default) | reported; sets the fast-log rate | - |
+| `AUTOTUNE_AXES` | any | flying AutoTune is NOT required; read only when the log happens to hold a session (tier A) | A |
+| `AUTOTUNE_AGGR` | as configured (0.075 default) | no AutoTune flight needed: the virtual AutoTune (tier B) applies this aggressiveness to an ordinary flight; --aggr overrides | A, B |
+| `AUTOTUNE_MIN_D` | as configured (0.0005 default) | no AutoTune flight needed: the virtual AutoTune (tier B) uses this floor for D | A, B |
+| `SID_AXIS` | 10/11/12 | optional plant-identification flight: SIDD output plus RATE.xOut input (mixer injection) | B |
+| `SID_MAGNITUDE` | 0.15 (yaw 0.55) | optional plant-identification flight | B |
+| `SID_F_START_HZ` | 0.5 | optional plant-identification flight (firmware default) | B |
+| `SID_F_STOP_HZ` | 40 | the sweep must pass the rate-loop crossover (4.5-5 Hz measured on a 10-inch quad, higher on smaller props); AnalyticTune's 5 Hz stop is for the attitude loop | B |
+| `SID_T_REC` | 70 | optional plant-identification flight (firmware default) | B |
+| `SID_T_FADE_IN` | 15 | optional plant-identification flight (firmware default) | B |
+| `SID_T_FADE_OUT` | 2 | optional plant-identification flight (firmware default) | B |
+
+Then fly the tuning profile: 30 s hover, 60 s of sharp roll stick inputs (±15–20°, quick
+release), 60 s pitch, 30 s yaw, one gain set per flight. For tier B on top of that, a
+SysID sweep of 0.5–40 Hz (`SID_T_REC 70`, fades 15 s / 2 s), one axis per flight —
+AnalyticTune's 0.05–5 Hz sweep stops at or below the rate-loop crossover (4.5–5 Hz
+measured on the 10-inch Brisket; ~23 Hz on the simulated 5-inch plant). A hover with no stick input is refused on excitation, not coherence. Set bit 0
+back afterwards on an onboard-flash board.
+
+A refusal begins `ERROR: these log files cannot be used for PID tuning.`, names each
+code with its fix and prints the table with the log's values. The codes:
+`NO_PID_MESSAGES`, `PID_RATE_TOO_LOW`, `IRREGULAR_SAMPLING`, `WINDOW_TOO_SHORT`,
+`NO_EXCITATION`, `OUTPUT_SATURATED`, `GAINS_CHANGED_IN_FLIGHT`, `DIFFERENT_AIRCRAFT`,
+`NO_COHERENCE` (tier B only), `AUTOTUNE_INCOMPLETE` (tier A only). `alog tune` exits 3;
+`alog all` makes it one `SKIP` result named `refused`. Do not re-derive gains through the
+Python API on a log that was refused.
+
+---
+
+## 9. Thresholds
 
 Every threshold lives in `dflog/checks.py::T` with a `source` field and is documented in
 `reference/thresholds.md`. **Do not hardcode a number in a script.** If you need a new one,
@@ -333,7 +419,7 @@ stricter is used for WARN. A threshold is a prompt to look, not a verdict.
 
 ---
 
-## 9. Pitfalls worth carrying in your head
+## 10. Pitfalls worth carrying in your head
 
 Full list in `reference/pitfalls.md`.
 
@@ -373,10 +459,35 @@ Full list in `reference/pitfalls.md`.
   nothing about `current_battery`; it is that channel's own integral.
 - **An unset RTC gives a 1980 log date.** The FC booted before GPS time was available.
   `alog info` derives the real UTC start from `GPS.GWk/GMS`.
+- **The standard `LOG_BITMASK` logs PID at 10 Hz.** `PIDR/PIDP/PIDY`, `RATE` and `ATT`
+  are 10 Hz without bit 0 (ATTITUDE_FAST); 180222 → 180223 makes them loop-rate. Every
+  reference log was refused `PID_RATE_TOO_LOW` for this reason (§8).
+- **`PIDx.Tar/Act/Err` are rad/s; `PIDx.TimeUS` is the write time.** `RATE` is deg/s and
+  stamped at the loop start. The tool converts and restamps PIDx to the RATE tick. A
+  P-only ceiling (heli −161°) is evidence only: it ignores D's phase lead
+  (`reference/pitfalls.md`, 2026-09-30).
+- **`ATT` vs `ANG`.** `ATT` is written by AHRS at 10 Hz on every firmware; `ANG` is the
+  loop-rate attitude on master with bit 0, and its `DesRoll` is the *shaped* target.
+  Older firmware has only `ATT`. The tool prefers `ANG` and says which it read.
+- **`ATC_ACCEL_x_MAX` is cdeg/s²; `ATC_ACC_x_MAX` is deg/s².** The 4.x spelling and the
+  master spelling differ by 100×. Read both, convert, state which was found
+  (`GainSet.param_names`); the Circuit V4.7.1 log lacks `ACCEL`, the Brisket log has it at
+  116700.
+- **`ATUN.ddt` is unscaled cdeg/s²** despite its unit tag: divide by 100. It is each
+  twitch's own peak acceleration, not a running maximum.
+- **A hover-only log gives high coherence and a biased plant.** With no stick the
+  reference is the angle loop reacting to noise: coherence reads ~1.0 and the estimate is
+  biased toward −1/C. Coherence is necessary, not sufficient; the tool gates on excitation
+  first (`NO_EXCITATION`).
+- **AutoTune's overshoot and bounce criteria apply to its test gains, not the final
+  loop.** The twitch flies I ≈ 0, FLTT 0, before the backoff; the log's step response is
+  the final loop with I active, and AutoTune's own result reads `overshoot_ratio` 2.4 on
+  the exact oracle step. That is why `step-rules` are withheld and the ratios are not
+  graded.
 
 ---
 
-## 10. Writing the report
+## 11. Writing the report
 
 Copy `templates/log-analysis-template.md`.
 
@@ -396,7 +507,7 @@ line in the project's notes has done half the job.
 
 ---
 
-## 11. Extending
+## 12. Extending
 
 - New check → a `check_*(log, window)` in `dflog/analysis.py` returning a `Section` built
   with `sec.add(Result)`, `sec.table(...)`, `sec.note(...)`, registered in `ALL_CHECKS`. It
@@ -411,12 +522,22 @@ line in the project's notes has done half the job.
 (WMM expected earth field, magfit) or `mavfft_isb.py`. It is not needed for anything in
 `alog`. See `reference/existing-tools.md`.
 
-Run all three test files after changing the parser, the trim math, the checks or the CLI:
+Run the test files after changing the parser, the trim math, the checks or the CLI:
 
 ```bash
 python tests/test_parser_integrity.py
 python tests/test_cli.py
+python tests/test_flights.py
+python tests/test_checks.py
+python tests/test_largeprop.py
 LOG_DIR=/path/to/logs python tests/test_toolkit.py
+python tests/test_tune_extract.py      # PID tuning: signals, segmentation, gates, LOGGING_REQUIREMENTS
+python tests/test_tune_sim.py          # the AC_PID replica, plant and AutoTune simulator
+python tests/test_tune_step.py         # tier C: step response, oscillation ceiling, step rules
+python tests/test_tune_atun.py         # tier A: ATUN reconstruction and branch backoffs
+python tests/test_tune_ident.py        # tier B: plant identification, margins, virtual AutoTune
+python tests/test_tune_fuse.py         # tier D, confidence, fusion, the tune Section
+python tests/test_tune_docs.py         # SKILLS.md/CLAUDE.md/README.md/thresholds.md agree with the tune code
 ```
 
 The regression tests pin the analysis against hand-verified figures; if a refactor changes

@@ -101,17 +101,22 @@ Read these, in order:
 3. **`cg` table** — the trim as a CG offset, % of arm and mm (with `--arm-mm`). Positive
    pitch = CG forward of the motor-line centre; that is the distance to move the battery.
 4. **`trim vs level hover`** — the same trim over hover chunks with |roll|, |pitch| < 3°.
-   Same figure → static asymmetry (move the CG / fix the blade). Different → a
-   translation artefact or wind; do not move anything on that evidence.
-5. **`drive-normalised RPM spread`** — `RPM / (duty × V)` per motor. A CG offset leaves it
+   Different → a translation artefact; do not move anything on that evidence. Same figure
+   → a CG/airframe asymmetry **or a steady breeze**, which level hover cannot tell apart.
+5. **`trim vs heading`** — the level-hover trim per 45° heading bin, fitted as an
+   airframe-fixed part (CG, blade, mount: move the battery / fix the blade) plus an
+   earth-fixed part (the breeze, with the bearing of the side it loads). SKIP when the hover
+   faced fewer than three bins spanning 90°: then the `cg` table is CG plus wind in unknown
+   proportion. To measure CG, hover ~20 s facing each of N, E, S, W, sticks centred.
+6. **`drive-normalised RPM spread`** — `RPM / (duty × V)` per motor. A CG offset leaves it
    flat while raw RPM spread reads 10 %; a dragging motor (bearing, damaged blade) drops
    it and nothing else shows it. The summary names the lowest motor.
-6. **ESC temperature** and **spread** — one hot ESC in a set is a finding on its own.
-7. **RPM spread** on medians, **DShot error rate**, **motor headroom** against the
+7. **ESC temperature** and **spread** — one hot ESC in a set is a finding on its own.
+8. **RPM spread** on medians, **DShot error rate**, **motor headroom** against the
    `MOT_SPIN_MAX` ceiling (p99.5, not the raw max).
 
 **Validation flight:** one change (move the battery by the mm figure, or swap the named
-prop), fly the same profile, run Skill 9 (`compare`) and expect the pitch trim and CG
+prop), fly the same profile, run Skill 10 (`compare`) and expect the pitch trim and CG
 offset to fall while `trim vs level hover` stays PASS. A trim in the same window that did
 not move means the change was not the cause.
 
@@ -133,7 +138,10 @@ Three cases the `notch` section distinguishes:
   − 1; a correct notch reads ~0.014) and `harmonic lock-on` (% of time above 1.5× the
   fundamental, i.e. the notch sitting on the second harmonic). Ground truth is always
   `ESC.RPM / 60`; `FTN1.PkAvg` is the FFT's opinion and only matters when `MODE=4`.
-- **Enabled but `FCNS` not logged** — SKIP; fix the logging, not the configuration.
+- **Per-motor notch (`INS_HNTCH_OPTS` bit 1)** — the firmware writes `FCN.CF1..CFn`, one centre
+  per ESC, and no `FCNS`. Each centre is checked against its own ESC's RPM/60 and
+  `notch N tracking` grades the worst of them, naming it.
+- **Enabled but neither `FCNS` nor `FCN` logged** — SKIP; fix the logging, not the configuration.
 - **Disabled** — SKIP, plus the **measured fundamental envelope** (min / p01 / median /
   p99 / max, per-motor medians) and a **starting point** table: `MODE=3` if the ESC
   telemetry is good, `REF=1`, `FREQ` just under the airborne p01, `BW = FREQ/2`,
@@ -193,11 +201,249 @@ python alog.py gust flight.bin --window rpm
   while |desired| < 1°). Check motor headroom and clipping first; if both are fine, it is
   the controller.
 - Attitude-error standard deviations rise ~20 % on a livelier flight with no change to
-  the tune. Compare like with like (Skill 2, Skill 9).
+  the tune. Compare like with like (Skill 2, Skill 10).
 
 ---
 
-## Skill 7 — GPS quality, an antenna or ground-plane change, two receivers
+## Skill 7 — Recommend PID gains (and capture a log that can)
+
+**Question:** what should `ATC_RAT_x_P/I/D`, `ATC_ANG_x_P`, `ATC_ACC_x_MAX` (and the yaw
+`FLTE`) be, how sure is that, and what do I have to fly to find out?
+
+Almost every log fails this skill at step 0. The standard `LOG_BITMASK` (180222 on both
+development aircraft) writes `PIDR/PIDP/PIDY`, `RATE` and `ATT` at **10 Hz**, and a 10 Hz
+stream cannot show a rate loop whose filters sit at 20–40 Hz. Such a log is refused with
+the `ERROR:` block shown at the end of this skill, and nothing in that output is a gain.
+
+**AutoTune is not required.** The point of this skill is to get gains from an ordinary
+fast-logged flight: the virtual AutoTune (tier B) identifies the rate-loop plant from the
+pilot's own stick inputs and runs the firmware's twitch search on it in software, and the
+step-response tier (C) supplies ceilings. A log that happens to hold an AutoTune session is
+read too (tier A), but nothing below asks you to fly one.
+
+### Before you fly: set these parameters
+
+The rows are `tune.LOGGING_REQUIREMENTS` verbatim (`tests/test_tune_docs.py` compares
+them); every refusal prints the same table with the aircraft's own values filled in.
+
+| parameter | required for a tuning log | why | tier |
+|---|---|---|---|
+| `LOG_BITMASK` | bits 0 (1) and 12 (4096) set | bit 0 ATTITUDE_FAST + bit 12 PID: loop-rate RATE/PID logging | B, C |
+| `LOG_FILE_RATEMAX` | 0 | a non-zero cap decimates the fast stream back down (0 or >= SCHED_LOOP_RATE) | B, C |
+| `LOG_BLK_RATEMAX` | 0 | same cap for the block backend (onboard-flash boards) | B, C |
+| `INS_LOG_BAT_MASK` | 0 | batch logging doubles the write rate; separate flight | B, C |
+| `LOG_FILE_BUFSIZE` | >= 64 | buffer for the doubled rate, KB; larger on boards that show LOG_GAP | B, C |
+| `LOG_DISARMED` | any | irrelevant; the window is airborne only | - |
+| `SCHED_LOOP_RATE` | as flown (400 default) | reported; sets the fast-log rate | - |
+| `AUTOTUNE_AXES` | any | flying AutoTune is NOT required; read only when the log happens to hold a session (tier A) | A |
+| `AUTOTUNE_AGGR` | as configured (0.075 default) | no AutoTune flight needed: the virtual AutoTune (tier B) applies this aggressiveness to an ordinary flight; --aggr overrides | A, B |
+| `AUTOTUNE_MIN_D` | as configured (0.0005 default) | no AutoTune flight needed: the virtual AutoTune (tier B) uses this floor for D | A, B |
+| `SID_AXIS` | 10/11/12 | optional plant-identification flight: SIDD output plus RATE.xOut input (mixer injection) | B |
+| `SID_MAGNITUDE` | 0.15 (yaw 0.55) | optional plant-identification flight | B |
+| `SID_F_START_HZ` | 0.5 | optional plant-identification flight (firmware default) | B |
+| `SID_F_STOP_HZ` | 40 | the sweep must pass the rate-loop crossover (4.5-5 Hz measured on a 10-inch quad, higher on smaller props); AnalyticTune's 5 Hz stop is for the attitude loop | B |
+| `SID_T_REC` | 70 | optional plant-identification flight (firmware default) | B |
+| `SID_T_FADE_IN` | 15 | optional plant-identification flight (firmware default) | B |
+| `SID_T_FADE_OUT` | 2 | optional plant-identification flight (firmware default) | B |
+
+Tiers: **A** AutoTune reconstruction from `ATUN`, **B** plant identification plus a
+virtual AutoTune, **C** step response plus oscillation ceiling (all three below). The
+row that matters is `LOG_BITMASK`: 180222 → 180223 sets bit 0. Fast logging roughly
+doubles the log rate, so on a board with onboard flash and no SD card set bit 0 back after
+the tuning flight, exactly as for batch logging (Skill 4).
+
+### The tuning flight
+
+- **Data-acquisition profile** (tiers B and C): bit 0 on, `INS_LOG_BAT_MASK 0`, take off
+  in ALT_HOLD, 30 s hover, then 60 s of sharp roll stick inputs (±15–20°, quick release),
+  60 s pitch, 30 s yaw, land. 3–5 min. One gain set per flight: a parameter change in the
+  air splits the log at that instant, and if no piece is 10 s long the axis is refused
+  (`GAINS_CHANGED_IN_FLIGHT`).
+- **Plant-identification profile** (raises tier B confidence): SysID mode, `SID_AXIS 10`
+  (then 11, 12 on later flights), `SID_MAGNITUDE 0.15` (yaw 0.55), `SID_F_START_HZ 0.5`,
+  `SID_F_STOP_HZ 40`, `SID_T_REC 70`, `SID_T_FADE_IN 15`, `SID_T_FADE_OUT 2` — the
+  firmware defaults — one axis per flight. The sweep must pass the rate-loop crossover,
+  which sat at 23 Hz on the simulated 5-inch plant: AnalyticTune's 0.05–5 Hz recipe is for
+  the attitude loop and yields `NO_COHERENCE` on the rate loop by design.
+- **A hover with no stick input is not a tuning log.** Coherence reads ~1.0 because the
+  reference is the angle loop reacting to noise, and the plant estimate is biased toward
+  −1/C. The tool refuses it on excitation (`NO_EXCITATION`), not on coherence.
+
+### Commands
+
+```bash
+python alog.py tune flight.bin                        # one log
+python alog.py tune before.bin after.bin              # several logs of one aircraft: plants pool, every gain set is reported
+python alog.py tune flight.bin --axes roll,pitch      # a subset of axes
+python alog.py tune flight.bin --aggr 0.075           # override the log's AUTOTUNE_AGGR for the virtual AutoTune (noted as override)
+python alog.py tune flight.bin --prop-in 10 --json    # add the Mission Planner initial-parameter comparison (`calculator` table)
+python alog.py all  flight.bin                        # the same analysis as the `tune` section, after `gust`
+```
+
+`--window`, `--pad`, `--flight N` and `--hz-floor` work as everywhere; `--flight all` is
+rejected, as `compare` rejects it. `alog tune` exits 3 when no axis has any tier A/B/C
+evidence (and on `DIFFERENT_AIRCRAFT`); in `alog all` the same refusal is one `SKIP`
+result named `refused` — never a pass — and the exit code is unaffected.
+
+### Read these, in order
+
+1. **The `ERROR:` block.** If the output begins `ERROR: these log files cannot be used
+   for PID tuning.`, read the code on each line and the parameter table under it, which
+   is the table above with the log's values (`180222 -> 180223`, `1 -> 0`, `ok`, `not in
+   log`). When only some axes are unusable the block is absent; the codes are in the
+   **`refusals`** table and each such axis has a WARN `<axis> insufficient data`. The
+   codes (`tune.REFUSAL_CODES`):
+   - `NO_PID_MESSAGES` — no `PIDx` and no `RATE` in the window: set bits 0 and 12.
+   - `PID_RATE_TOO_LOW` — the stream is below 100 Hz (200 Hz recommended): the 10 Hz
+     standard; the fix line names the exact new `LOG_BITMASK`.
+   - `IRREGULAR_SAMPLING` — timing jitter above 5 %, or `LOG_GAP`s cutting every piece
+     below 10 s: the logger stalled (SD card, `LOG_FILE_BUFSIZE`, batch logging on the
+     same flight). Not transformed, not resampled.
+   - `WINDOW_TOO_SHORT` — the window is shorter than the 10 s minimum segment.
+   - `NO_EXCITATION` — fewer than 10 deconvolution frames with |target| ≥ 20 deg/s: fly
+     the profile above.
+   - `OUTPUT_SATURATED` — `PIDx.Flags` bit 0 on more than 20 % of samples: the loop is
+     nonlinear there; hover throttle and motor headroom first (Skill 3, Skill 8). The
+     signals are still analysed; read this as a caveat on everything below.
+   - `GAINS_CHANGED_IN_FLIGHT` — no parameter-constant piece of 10 s: one gain set per
+     flight.
+   - `DIFFERENT_AIRCRAFT` — frame class/type, board or MCU id differ between the logs.
+   - `NO_COHERENCE` (tier B only) — the coherent band is empty or stops below the loop
+     crossover: SysID sweep to 40 Hz, or sharper stick inputs; tier C is still reported.
+   - `AUTOTUNE_INCOMPLETE` (tier A only, informational) — a session in the log ended
+     before `TUNE_COMPLETE` on that axis, so tier A has nothing for it. Tiers B and C from
+     an ordinary fast-logged flight do not need a session; rerun AutoTune only if you
+     want tier A.
+2. **`recommendations` table** — `axis | param | current | recommended | change % |
+   confidence | method | why`, one row per parameter, and a result line `<axis> <param>`
+   per row: PASS at confidence ≥ 0.7, WARN "validate before applying" at 0.4–0.7, WARN
+   with **`withheld`** in the recommended column (and `-` for change) below 0.4 — the
+   value then exists only as `evidence.withheld_value`. The **method** says where the
+   number came from:
+   - `autotune-log` — tier A: the gains the firmware found, re-derived from every `ATUN`
+     twitch with the branch's own backoff (`AUTOTUNE_GMBK` on 4.7+, fixed on 4.3–4.6) and
+     checked against the `MSG` lines and the saved `PARM`. Median over sessions, spread
+     graded by `tune_session_spread`. Prior 1.0.
+   - `virtual-autotune` — tier B: AutoTune's twitch search run in software on the
+     rate-loop plant identified from this log (`PIDx.Tar/Act` and the plant input, joint
+     I/O estimate gated by coherence), with the log's `AUTOTUNE_AGGR`/`GMBK`/`MIN_D` and
+     hover throttle. Prior 0.8.
+   - `ceiling` — a measured oscillation ceiling (`SRate` p95 above `QUIK_OSC_SMAX` 5, a
+     limit cycle in the D term or the tracking error, or the heli −161°/−251° phase rule
+     on the plant) times QuickTune's 0.4 margin; also the method of any higher-tier value
+     that was clipped to a ceiling (the note says so). Prior 0.7.
+   - `step-rules` — tier C: bounded ±25 % adjustments from the deconvolved step response.
+     **Uncalibrated**: AutoTune's overshoot and bounce criteria are written for a twitch
+     flown with *test* gains (I ≈ 0, FLTT 0, before the backoff), while the log's step is
+     the final loop with I active — even the exact step of AutoTune's own result reads
+     `overshoot_ratio` 2.4 and `bounce_ratio` 1.9. The confidence is capped at 0.39, so a
+     `step-rules` row is always `withheld` and its note starts "uncalibrated". Its ratios
+     are evidence of direction, not a value to apply.
+   - `unchanged` — not a recommendation: `ATC_ACC_x_MAX` is left as configured because
+     the proposing tier was not A/B at ≥ 0.7, or the tier's value is inside the **±5 %
+     deadband** (`fuse_deadband_pct`: the same aircraft and gains re-identified on two flights
+     moved 3–4 %). The note starts `no change:` and names the tier's value, which is also in
+     `evidence.deadband_value`. Rate gains are not deadbanded while the current loop misses
+     45° / 6 dB — there a small change is the correction.
+   A rate set is also `withheld` when its margins are **not measured**: the crossover lies
+   above the coherent band, or the gain margin is read above it on a fit whose `tau2`/delay
+   sit at their bounds. The note says which and asks for a SysID sweep on that axis.
+   `I` follows `P` by AutoTune's ratio (1.0 roll/pitch, 0.1 yaw) unless the log's own
+   I/P was deliberately different, which is preserved and said. Yaw gets `P`, `I` and
+   `FLTE` only (and `D` only when `AUTOTUNE_AXES` bit 8 was set).
+3. **The confidence components** on each result line: `prior × adequacy × excitation ×
+   consistency × agreement`. *Adequacy* is the sample rate against 100/200 Hz times the
+   unsaturated fraction; *excitation* is frames against 30 (tier C), coherence × band
+   cover (tier B), or 1.0 / 0.3 for a complete / partial AutoTune axis (tier A);
+   *consistency* is the per-frame step spread, the Bendat–Piersol error of |G| at the
+   crossover, or 1 − session spread; *agreement* is 1 − |Δ|/max when another tier
+   proposed a value (floored at 0.5; `step-rules` never sets it). A low number is
+   auditable from these five, and `--json` carries them under `components`.
+4. **`ceilings`** — `axis | param | ceiling | method | clips to | evidence`. Hard
+   upper bounds, whatever the tier. `margin-45deg-6dB` is the largest P or D whose full
+   loop keeps the margins on the identified plant: a value above it is clipped *to* it. An
+   oscillation ceiling (SRate, limit cycle) is where the loop was seen to oscillate: a value
+   above it is clipped to 0.4 × ceiling. The fused P/I/D set is then re-checked and withheld
+   (`the rate set as applied ... below the limits`) if it fails. The heli AutoTune -161°/-251°
+   figures are printed as evidence only: they are P-only rules that ignore D's phase lead. "No ceiling found" is a note and a fact, not a pass.
+5. **`step`** — one row per gain set per log: frames (or the refusal code), latency, rise,
+   peak, `overshoot ratio` and `bounce ratio` with `warn 1, fail 2` beside them, settling,
+   steady state, consistency, `SRate p95`, ceiling yes/no. The ratios are **not graded**
+   (item 2, `step-rules`); read `SRate p95` against 5 and `ceiling` first.
+6. **`plant`, `margins`** — `k`, `τ1`, `τ2`, delay, fit residual in dB and degrees, the
+   coherent band and mean coherence, the Bendat–Piersol error at the crossover; then the
+   open-loop crossover, phase margin and gain margin on the fit and measured in band.
+   Results `<axis> gain margin` / `<axis> phase margin` are graded at 6 dB / 45°
+   (`tune_gain_margin_db`, `tune_phase_margin_deg`), or `SKIP ... not measured` when read
+   outside the coherent band on an unidentified high-frequency lag. Tier B is used only when the band
+   contains the crossover and the fit residual is below 3 dB; the note says when it was
+   not, and why.
+7. **`autotune`** — per session and axis: the completed steps, the twitch outcomes
+   re-derived from `Targ/Min/Max` with the log's AGGR, the backoff assumed and the backoff
+   *observed* in the log (`RP` of the ANGLE rows ÷ the last RATE_P_UP row), and the
+   agreement with `MSG`. A `<axis> AutoTune reconstruction vs MSG` FAIL means the
+   reconstruction and the firmware disagree by more than 1 %: say which is more likely
+   wrong from the version before using the number.
+8. **`params`** (and **`calculator`** with `--prop-in`) — tier D, always present: `<axis>
+   I/P ratio` against AutoTune's final ratio, `<axis> FLTD` / `FLTT` against
+   `INS_GYRO_FILTER/2`, `D/P ratio` (reported, not graded), `AC_PID ranges`, `SMAX`,
+   `ATC_RATE_FF_ENAB`, and the configured gain set per axis with its `defaulted` column.
+   Tier D never produces a gain; it tells you whether the set is self-consistent.
+9. **`logs`** — which tiers each log contributed (`A`, `B`, `C`, `D`) and its refusal
+   codes, so a reader sees which log carried the evidence.
+10. **Notes** — the "Parameters NOT in the log, defaults assumed" line (every number that
+    depends on one is conditional), each tier's own description, and the validation
+    flights.
+
+**Decision rule.** Apply a value only at confidence ≥ 0.7. Between 0.4 and 0.7 fly it as
+a validation, not a change: apply, fly the profile, `alog tune before.bin after.bin`,
+and keep it only if the numbers below moved the right way. Never apply a withheld value —
+it is in the evidence so the next analysis can compare against it, not for the aircraft.
+One axis per flight, one gain set per flight, and `I` moves with `P`.
+
+**Validation flight:** apply the recommended set for one axis, fly the tuning profile
+again, then `alog tune before.bin after.bin` — both gain sets appear in `step`, the
+plants pool. Expect `overshoot ratio` and `bounce ratio` to move toward 1.0 (direction,
+not value — they are uncalibrated), gain and phase margin to stay above 6 dB / 45°,
+`SRate p95` below 5 and `Dmod` at 1.000 (Skill 6). Run Skill 10 (`compare`) for
+everything else: a tune that improved the step and worsened the gust rate is not done.
+
+**Worked example — the block a standard log produces.** The Circuit quad's
+`circuit-batch.bin` (ArduCopter V4.7.1, `LOG_BITMASK` 180222, batch logging left
+on from a notch flight), `tune` section of `alog all`; `alog tune` prints the same block
+first and appends `exit code 3`:
+
+```
+ERROR: these log files cannot be used for PID tuning.
+  circuit-batch.bin: PID_RATE_TOO_LOW - PIDR logged at 10.0 Hz over 77.0-239.1 s; 100 Hz needed (200 Hz recommended) [roll, pitch, yaw]
+Set these ArduCopter parameters and fly the tuning profile (SKILLS.md, 'Recommend PID gains'):
+  LOG_BITMASK       180222 -> 180223  (bit 0 ATTITUDE_FAST + bit 12 PID: loop-rate RATE/PID logging)
+  LOG_FILE_RATEMAX  0  ok
+  LOG_BLK_RATEMAX   0  ok
+  INS_LOG_BAT_MASK  1 -> 0  (batch logging doubles the write rate; separate flight)
+  LOG_FILE_BUFSIZE  172  ok
+  LOG_DISARMED      0  ok
+  SCHED_LOOP_RATE   400  ok
+  AUTOTUNE_AXES     4  ok
+  AUTOTUNE_AGGR     0.075  ok
+  AUTOTUNE_MIN_D    0.0005  ok
+  SID_AXIS          0  ok
+  SID_MAGNITUDE     not in log
+  SID_F_START_HZ    not in log
+  SID_F_STOP_HZ     not in log
+  SID_T_REC         not in log
+  SID_T_FADE_IN     not in log
+  SID_T_FADE_OUT    not in log
+```
+
+Two parameters to change (`LOG_BITMASK`, `INS_LOG_BAT_MASK`), the rest confirmed. The
+tier-D lines above the block in that report were all PASS (I/P 1.000, FLTD/FLTT 37.5 Hz =
+`INS_GYRO_FILTER`/2, yaw I/P 0.100) — a self-consistent AutoTune set, which is still not a
+gain recommendation.
+
+---
+
+## Skill 8 — GPS quality, an antenna or ground-plane change, two receivers
 
 **Question:** is the GPS working, and better than before?
 
@@ -225,7 +471,7 @@ on `--checks gps` and read HAcc median before/after.
 
 ---
 
-## Skill 8 — Current sensor: is it lying, and by how much?
+## Skill 9 — Current sensor: is it lying, and by how much?
 
 **Question:** what does the sensor read when nothing is drawing, and what does hover cost?
 
@@ -253,7 +499,7 @@ offset is wrong at every current but one.
 
 ---
 
-## Skill 9 — Before/after comparison (one change per flight)
+## Skill 10 — Before/after comparison (one change per flight)
 
 **Question:** did the change help?
 
@@ -274,7 +520,7 @@ python alog.py compare before.bin after.bin --flight 1 --window ev
 
 ---
 
-## Skill 10 — EKF, compass and estimator health
+## Skill 11 — EKF, compass and estimator health
 
 **Question:** does the flight controller trust its own sensors?
 
@@ -296,7 +542,7 @@ python alog.py estimates flight.bin
 
 ---
 
-## Skill 11 — Parameters: what flew, what changed, what differs
+## Skill 12 — Parameters: what flew, what changed, what differs
 
 **Question:** which parameter set does this log belong to?
 
@@ -316,7 +562,7 @@ python alog.py paramcheck flight.bin                        # NaN values, in-fli
 
 ---
 
-## Skill 12 — Events, log end, and "why did it do that"
+## Skill 13 — Events, log end, and "why did it do that"
 
 **Question:** what happened, and did the log end in flight?
 
@@ -335,7 +581,7 @@ python alog.py brownout flight.bin
 
 ---
 
-## Skill 13 — Get at the raw data
+## Skill 14 — Get at the raw data
 
 **Question:** I need the numbers themselves.
 
@@ -372,7 +618,7 @@ r    = spectral.analyse(log, window=w)        # Welch PSD + peaks in motor order
 
 ---
 
-## Skill 14 — Write it up
+## Skill 15 — Write it up
 
 Copy `templates/log-analysis-template.md`. Integrity block and window first, a
 one-paragraph verdict, then findings ordered by value — each with the number, the

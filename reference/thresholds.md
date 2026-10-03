@@ -124,7 +124,7 @@ DLA's `battery` low threshold is 15 % remaining.
 |---|---|---|---|
 | `rpm_spread_pct` | 3 % | 8 % | MEAS — on **medians**. Healthy baseline 1.4 %, bent prop 5.7 %, worst observed 7.5 %. |
 | `trim_us` | 10 | 25 | MEAS — `\|roll/pitch/yaw trim\|` in µs; healthy baseline yaw −5.0, bent-prop yaw +22.6 |
-| `trim_hover_diff_us` | 10 | 25 | MEAS — largest-axis difference between the trim over the whole window and the same trim over level hover (hover chunks with `\|roll\|,\|pitch\|` < 3°, or level samples when there is no chunk). Identical means a static asymmetry (CG, blade, mount); a static case read 58.6 vs 57.8 µs. Different means the trim depends on translating — wind or a forward-flight artefact (issue #8) |
+| `trim_hover_diff_us` | 10 | 25 | MEAS — largest-axis difference between the trim over the whole window and the same trim over level hover (hover chunks with `\|roll\|,\|pitch\|` < 3°, or level samples when there is no chunk). Different means the trim depends on translating — a forward-flight artefact (issue #8). Identical means a CG/airframe asymmetry **or a steady breeze** (a static case read 58.6 vs 57.8 µs; Brisket 2026-09-30 read identical in level hover on both flights while a breeze moved the trim 20.6/12.7 → 35.2/0.2 µs with the battery untouched); `trim vs heading` separates the two, grading its airframe-fixed part on `trim_us` |
 | `esc_err_pct` | 5 % | 15 % | MEAS — a healthy bidirectional-DShot link runs 2.7–3.3 % steadily with no ill effect |
 | `motor_headroom` | 0.90 | 0.97 | DLA-style — p99.5 output as a fraction of the `MOT_SPIN_MAX` ceiling |
 | `drive_norm_spread_pct` | 3 % | 6 % | MEAS — (max−min)/mean of per-motor median `RPM / (duty × pack V)` over the p20–p80 band of fleet duty. Healthy 1.7–2.4 % on three flights of a 10-inch quad whose *raw* RPM spread was 10–12 % (issue #7): load asymmetry from a CG offset leaves this flat, a dragging motor drops it |
@@ -185,6 +185,61 @@ touchdown), `BW = FREQ/2`, `HMNCS=3`, `ATT=40`, and `OPTS=2` (per-motor notches)
 inter-motor spread exceeds 5 %. It says what cannot be verified from that log and names
 the batch-logging flight that would. A notch that is *enabled* but has no `FCNS` is a
 different SKIP — fix the logging, not the configuration.
+
+### PID tuning
+| key | warn | fail | source |
+|---|---|---|---|
+| `tune_pid_rate_hz` | < 200 Hz | < 100 Hz | PID-Analyzer 0.5 s step window + 25 Hz Wiener regulariser (Nyquist); ArduCopter fast logging (`LOG_BITMASK` bit 0) = `SCHED_LOOP_RATE`. The standard bitmask logs `PIDx`/`RATE` at 10 Hz, which cannot show a rate loop whose filters sit at 20–40 Hz |
+| `tune_min_frames` | < 30 | < 10 | PID-Analyzer `high.sum() < 10` rule (fail); 30 MEAS — deconvolution frames whose max \|target\| ≥ 20 deg/s |
+| `tune_coherence` | < 0.8 | < 0.6 | fpvpidlab 0.5 gate, AnalyticTune "sufficient coherence", Bendat & Piersol random-error formula — mean coherence over the identification band |
+| `tune_confidence` | < 0.7 | < 0.4 | MEAS (this plan, `docs/pid-tuning-plan.md` §2.5) — ≥ 0.7 recommend, 0.4–0.7 indicative ("validate before applying"), < 0.4 withheld |
+| `tune_srate_osc` | > 5 | > 10 | `QUIK_OSC_SMAX` default 5 (VTOL-quicktune.lua) — `PIDx.SRate` p95; QuickTune calls the loop oscillating above it |
+| `tune_overshoot_ratio` | > 1.0 | > 2.0 | AutoTune overshoot allowance `0.5 × AGGR` (rate P and angle P steps) — step overshoot ÷ (0.5 × `AUTOTUNE_AGGR`) |
+| `tune_bounce_ratio` | > 1.0 | > 2.0 | AutoTune bounce-back criterion `AGGR × peak` (rate D steps) — step bounce-back ÷ `AUTOTUNE_AGGR` |
+| `tune_gain_margin_db` | < 6 dB | < 3 dB | AnalyticTune / heli AutoTune 6 dB — open-loop `L = C·G` gain margin |
+| `tune_phase_margin_deg` | < 45° | < 30° | AnalyticTune 45° — open-loop phase margin |
+| `tune_session_spread` | > 0.15 | > 0.30 | MEAS — (max − min)/median of a gain across AutoTune sessions of one aircraft |
+| `tune_pi_ratio_dev` | > 0.25 | > 0.50 | AutoTune `PI_RATIO_FINAL` 1.0 (roll, pitch) / `YAW_PI_RATIO_FINAL` 0.1 — \|I/P ÷ ratio − 1\| |
+| `tune_flt_ratio_dev` | > 0.25 | > 0.50 | WIKI `FLTD = FLTT = INS_GYRO_FILTER / 2` — \|FLTD or FLTT ÷ (INS_GYRO_FILTER/2) − 1\| |
+| `tune_limited_pct` | > 5 % | > 20 % | MEAS — percent of `PIDx` samples with `Flags` bit 0 (output limited, anti-windup active); above fail the loop is nonlinear and refusal `OUTPUT_SATURATED` is raised |
+
+The "MEAS" rows here are chosen in `docs/pid-tuning-plan.md` §4, not yet measured: none of
+the reference logs has fast attitude logging, so the first real-log behaviour is a
+`PID_RATE_TOO_LOW` refusal. Re-measure them when a fast-logged flight exists.
+
+Algorithm constants — not gradings — live in `dflog/tune.py::CONSTANTS`, each entry
+`dict(value=, source=, note=)`: the PID-Analyzer frame (1.0 s), response (0.5 s), overlap
+(1/16), regulariser cut (25 Hz), minimum target (20 deg/s) and low/high split (500
+deg/s); the full multicopter AutoTune table (`AUTOTUNE_AGGR` 0.075, `GMBK` 0.25, `MIN_D`
+0.0005, the 5 % steps, gain limits, rate and angle targets, `SUCCESS_COUNT` 4, the
+acceleration floors, `D_UP_DOWN_MARGIN` 0.2, the PI ratios); QuickTune's `QUIK_OSC_SMAX` 5
+and `QUIK_GAIN_MARGIN` 0.6; and the 10 s minimum parameter-constant segment. Firmware
+defaults used when a parameter is absent from the log are in `tune.DEFAULTS` with the
+header each came from, and every one that was used is named in `GainSet.defaulted`.
+RULES §2 forbids hard-coding a number in a check; those tables are where the numbers live
+and where their provenance is. `alog schema` prints `T`; the constants table is
+`tune_constants` (`tune.all_constants()` merges every tuning module's table).
+
+**Confidence priors.** A recommendation's confidence is `prior × adequacy × excitation ×
+consistency × agreement` (`docs/pid-tuning-plan.md` §2.5) and is graded by
+`tune_confidence` above. The prior per method is `dflog/tune_fuse.py::PRIORS`, source
+"docs/pid-tuning-plan.md section 2.5" (chosen, MEAS-class, not yet measured on a real
+fast-logged flight):
+
+| method | prior | what it is |
+|---|---|---|
+| `autotune-log` | 1.0 | the gains the firmware found and saved, re-derived from `ATUN` |
+| `virtual-autotune` | 0.8 | AutoTune's own search run on the identified plant |
+| `ceiling` | 0.7 | a measured oscillation ceiling × QuickTune's 0.4 margin |
+| `step-rules` | 0.5 | bounded adjustments from the deconvolved step response |
+| `unchanged` | 0.0 | not a recommendation: the parameter is left as configured and the row says why |
+
+Two fusion constants sit beside them in `tune_fuse.FUSE_CONSTANTS`: `step-rules` values
+are capped at `fuse_tier_c_confidence_cap` 0.39 — below `tune_confidence.fail`, so always
+withheld — because AutoTune's overshoot/bounce criteria apply to a twitch flown with test
+gains, not to the final loop a log shows (plan §2.5, tier C caveat, WP3 2026-09-17); and
+`agreement` is floored at `fuse_agreement_floor` 0.5. Re-measure the priors when a
+fast-logged flight exists, in the same pass as the MEAS rows above.
 
 ---
 

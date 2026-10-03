@@ -79,6 +79,14 @@ DLA = "dronekit-la (unmaintained since 2022)"
 WIKI = "ardupilot.org wiki"
 MEAS = "measured on the development logs; see reference/thresholds.md"
 EKF3_GPS = "ArduPilot AP_NavEKF3 calcGpsGoodToAlign, EK3_GPS_CHECK limits"
+# Firmware-derived values for the PID tuning checks (dflog/tune.py). The constants
+# themselves are quoted in reference/pid-tuning-sources.md; the plan that chose these
+# gradings is docs/pid-tuning-plan.md section 4.
+AUTOTUNE = "ArduCopter AC_AutoTune_Multi.cpp constants; reference/pid-tuning-sources.md section 1"
+PIDA = "PID-Analyzer (Plasmatree) step-response method; reference/pid-tuning-sources.md section 7"
+QUIK = "ArduPilot VTOL-quicktune.lua defaults; reference/pid-tuning-sources.md section 4"
+ANALYTIC = "ArduPilot AnalyticTune / heli AutoTune margins; reference/pid-tuning-sources.md section 5"
+PLAN = "docs/pid-tuning-plan.md section 4 (MEAS: chosen for this tool, to be re-measured on fast-logged flights)"
 
 #: Threshold registry. Every check must cite one of these rather than hardcode.
 T = {
@@ -142,9 +150,10 @@ T = {
     # --- motors ----------------------------------------------------------
     "rpm_spread_pct": _t(3.0, 8.0, MEAS, "(max-min)/mean of per-motor mean RPM, airborne"),
     "trim_us":        _t(10.0, 25.0, MEAS, "|roll/pitch/yaw trim| in us of motor output"),
-    # The same trim measured over level hover only. Identical means a static asymmetry
-    # (CG, blade, mount); different means the trim depends on translating - wind or a
-    # forward-flight artefact. A static case read 58.6 vs 57.8 us (issue #8).
+    # The same trim measured over level hover only. Different means the trim depends on
+    # translating - a forward-flight artefact. Identical means a CG/airframe asymmetry OR a
+    # steady breeze; `trim vs heading` separates them. A static case read 58.6 vs 57.8 us
+    # (issue #8).
     "trim_hover_diff_us": _t(10.0, 25.0, MEAS, "largest-axis |trim over level hover - trim over the whole "
                                                "window|, us"),
     "esc_err_pct":    _t(5.0, 15.0, MEAS, "ESC.Err, bidirectional DShot error rate percent"),
@@ -174,4 +183,36 @@ T = {
     "notch_atten_db": _t(-10.0, -6.0, WIKI, "notch attenuation at the fundamental, dB (more negative is better)"),
     "motor_peak_db":  _t(25.0, 40.0, WIKI, "peak at a motor order above the spectral floor, dB; FFT_SNR_REF "
                                            "default 25 dB, FFT_OPTIONS warns above 40 dB"),
+
+    # --- PID tuning (dflog/tune.py; docs/pid-tuning-plan.md section 4) --------
+    # Standard LOG_BITMASK logs PIDx/RATE at 10 Hz; bit 0 (ATTITUDE_FAST) logs them at
+    # the loop rate. A 0.5 s step-response window regularised at 25 Hz needs >= 100 Hz
+    # to have any content above the regulariser (Nyquist), and 200 Hz to resolve a
+    # 20-40 Hz rate-loop filter cleanly.
+    "tune_pid_rate_hz":     _t(200.0, 100.0, f"{PIDA} 0.5 s window + 25 Hz regulariser (Nyquist); "
+                                             "ArduCopter fast logging = SCHED_LOOP_RATE",
+                               "PIDx/RATE sample rate, Hz; lower is worse"),
+    "tune_min_frames":      _t(30, 10, f"{PIDA} high.sum() < 10 rule; 30 {MEAS}",
+                               "deconvolution frames with max |target| >= 20 deg/s; lower is worse"),
+    "tune_coherence":       _t(0.8, 0.6, "fpvpidlab 0.5 gate; AnalyticTune 'sufficient coherence'; "
+                                         "Bendat & Piersol random-error formula",
+                               "mean coherence over the identification band; lower is worse"),
+    "tune_confidence":      _t(0.7, 0.4, PLAN, "recommendation confidence in [0, 1]; lower is worse: "
+                                               ">= 0.7 recommend, 0.4-0.7 indicative, < 0.4 withheld"),
+    "tune_srate_osc":       _t(5.0, 10.0, f"{QUIK} QUIK_OSC_SMAX 5", "PIDx.SRate p95, normalised output/s; "
+                                                                      "higher is worse (oscillating)"),
+    "tune_overshoot_ratio": _t(1.0, 2.0, f"{AUTOTUNE} overshoot allowance 0.5 x AGGR",
+                               "step overshoot / (0.5 x AUTOTUNE_AGGR); higher is worse"),
+    "tune_bounce_ratio":    _t(1.0, 2.0, f"{AUTOTUNE} bounce-back criterion AGGR x peak",
+                               "step bounce-back / AUTOTUNE_AGGR; higher is worse"),
+    "tune_gain_margin_db":  _t(6.0, 3.0, f"{ANALYTIC} 6 dB", "open-loop gain margin, dB; lower is worse"),
+    "tune_phase_margin_deg": _t(45.0, 30.0, f"{ANALYTIC} 45 deg", "open-loop phase margin, deg; lower is worse"),
+    "tune_session_spread":  _t(0.15, 0.30, PLAN, "(max - min)/median of a gain across AutoTune sessions; "
+                                                 "higher is worse"),
+    "tune_pi_ratio_dev":    _t(0.25, 0.50, f"{AUTOTUNE} PI_RATIO_FINAL 1.0 (roll, pitch) / YAW_PI_RATIO_FINAL 0.1",
+                               "|I/P / AutoTune ratio - 1|; higher is worse"),
+    "tune_flt_ratio_dev":   _t(0.25, 0.50, f"{WIKI} FLTD = FLTT = INS_GYRO_FILTER / 2",
+                               "|FLTD or FLTT / (INS_GYRO_FILTER/2) - 1|; higher is worse"),
+    "tune_limited_pct":     _t(5.0, 20.0, PLAN, "percent of PIDx samples with Flags bit 0 (output limited); "
+                                                "higher is worse - above fail the loop is nonlinear"),
 }

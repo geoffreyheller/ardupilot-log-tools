@@ -22,3 +22,6 @@ dist/
 
 # Scrubbed, trimmed test fixtures cut from real logs by tools/make_fixture.py
 !tests/fixtures/*.bin
+
+# Local map from neutral test-log labels to real log file names (see tests/test_toolkit.py)
+*.local.json

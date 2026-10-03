@@ -35,12 +35,12 @@ LOG_DIR = os.environ.get("LOG_DIR", os.path.join(
 # Reference log B: the same airframe with INS_LOG_BAT_MASK=1 / OPT=4, so it exercises
 # the batch-IMU path as well.
 LOG_A = os.environ.get("LOG_A", os.path.join(LOG_DIR, "1980-01-10 17-54-09.bin"))
-LOG_B = os.environ.get("LOG_B", os.path.join(LOG_DIR, "2026-09-03 19-44-48.bin"))
+LOG_B = os.environ.get("LOG_B", os.path.join(LOG_DIR, "circuit-batch.bin"))
 
 # The large-prop aircraft of issue #3: a 10-inch quad hovering near 84 Hz. Three logs, one
 # flight each by the EV land detector. LOG_DIR_LARGE points at the directory holding them.
 LOG_DIR_LARGE = os.environ.get("LOG_DIR_LARGE", os.path.join(LOG_DIR, "large-prop"))
-LARGE_PROP_LOGS = ["2026-08-06 18-21-35.bin", "2026-09-14 18-05-20.bin", "2026-09-14 18-53-23.bin"]
+LARGE_PROP_LOGS = ["brisket-l1.bin", "brisket-l2.bin", "brisket-l3.bin"]
 
 # The figures pinned below were measured on the `rpm` window with the fixed 90 Hz floor
 # this toolkit used before issue #3. The floor is now derived from the log (84.5 Hz on this
@@ -53,7 +53,23 @@ def _rpm_window(log):
     return airborne_window(log, method="rpm", hz_floor=RPM_FLOOR_PINNED)
 
 
+# Reference logs are named by neutral labels here, not by their recording time. A local,
+# untracked JSON file maps each label to the file on disk: {"brisket-t1.bin": "<real name>"}.
+LOG_MAP = os.environ.get("LOG_MAP", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                                 "logmap.local.json"))
+
+
+def _resolve(path):
+    if os.path.exists(path) or not os.path.exists(LOG_MAP):
+        return path
+    import json
+    with open(LOG_MAP, encoding="utf-8") as f:
+        real = json.load(f).get(os.path.basename(path))
+    return os.path.join(os.path.dirname(path), real) if real else path
+
+
 def _load(path):
+    path = _resolve(path)
     if not os.path.exists(path):
         pytest.skip(f"log not available: {path}")
     return Log(path)
@@ -272,6 +288,69 @@ def test_windows_agree_within_a_couple_of_seconds():
     # 90 Hz was right here, and the derivation must not have changed the answer.
     assert 80.0 < rpm.hz_floor < 90.0, rpm.hz_floor
     assert abs(rpm.duration - _rpm_window(log).duration) < 1.0
+
+
+# ------------------------------------------ PID tuning: the first real fast-logged flight
+
+BRISKET_TUNE_LOG = "brisket-t1.bin"
+
+
+def test_brisket_fast_log_tune_pins():
+    """Brisket, LOG_BITMASK 180223, batch off, 279 s of stick inputs (plan WP9). Pins the
+    two extraction fixes (PIDx rad/s; PIDx write-time jitter restamped to the RATE tick)
+    and the margin-ceiling fusion, hand-checked on 2026-09-30: the flown roll loop has
+    PM 48.6 deg / GM 8.9 dB and step overshoot 23 %, pitch 43.1 deg / 7.5 dB / 31 %."""
+    import math
+    from dflog import tune_fuse
+    from dflog.tune import extract_axes
+    log = _load(os.path.join(LOG_DIR_LARGE, BRISKET_TUNE_LOG))
+    w = airborne_window(log)
+    sigs, refs = extract_axes(log, w)
+    assert refs == [], [r.line() for r in refs]
+    roll = [s for s in sigs if s.axis == "roll"][0]
+    assert roll.clock == "RATE" and roll.raw_jitter > 0.3 and abs(roll.fs - 400.0) < 1.0
+    assert 150.0 < max(abs(roll.tar)) < 200.0                     # deg/s, not rad/s
+    a = tune_fuse.analyse([log], [w])
+    m = {ax: a.per_axis[ax]["margins"] for ax in ("roll", "pitch")}
+    assert abs(m["roll"]["pm_deg"] - 48.6) < 1.0 and abs(m["roll"]["gm_db"] - 8.9) < 0.3
+    assert abs(m["pitch"]["pm_deg"] - 43.1) < 1.0 and abs(m["pitch"]["gm_db"] - 7.5) < 0.3
+    r = {x.param: x for x in a.recommendations}
+    assert abs(r["ATC_RAT_RLL_P"].value / 0.1528 - 1) < 0.02 and r["ATC_RAT_RLL_P"].evidence["margin_clipped"]
+    assert abs(r["ATC_RAT_PIT_P"].value / 0.1288 - 1) < 0.02
+    for p in ("ATC_RAT_RLL_P", "ATC_RAT_PIT_P"):
+        assert 0.4 <= r[p].confidence < 0.7 and r[p].evidence["margin_gate"]["ok"]
+    assert math.isnan(r["ATC_ANG_RLL_P"].value) and math.isnan(r["ATC_ANG_PIT_P"].value)
+    refd = [x if isinstance(x, dict) else x.to_dict() for x in a.refusals]
+    assert "NO_COHERENCE" in {x["code"] for x in refd if x.get("axis") == "yaw"}
+    # the current pitch loop missed the margins (43.1 deg): -4.6 % is a correction, not
+    # deadbanded - and it was flown (brisket-t2 below) and measured 46.2 deg
+    assert r["ATC_RAT_PIT_P"].method == "virtual-autotune" and "not deadbanded" in r["ATC_RAT_PIT_P"].note
+
+
+BRISKET_TUNE_AFTER = "brisket-t2.bin"
+
+
+def test_brisket_pitch_change_validated_and_yaw_withheld():
+    """The pitch set of brisket-t1 flown on brisket-t2 (P 0.129, D 0.0035; I left at 0.135), in a
+    light breeze on the same pack. Pins the validation (pitch PM 43.1 -> 46.2 deg, roll
+    unchanged within 1 deg), the deadband (pitch now within 5 % of its ceiling: no change),
+    and the extrapolation gate (yaw coherent only 0.5-3.5 Hz with tau2/delay pinned: its
+    P 0.18 -> 0.48 at confidence 0.70 is withheld, its gain margin SKIP)."""
+    import math
+    from dflog import tune_fuse
+    log = _load(os.path.join(LOG_DIR_LARGE, BRISKET_TUNE_AFTER))
+    a = tune_fuse.analyse([log], [airborne_window(log)])
+    m = {ax: a.per_axis[ax]["margins"] for ax in ("roll", "pitch")}
+    assert abs(m["pitch"]["pm_deg"] - 46.2) < 1.0 and abs(m["pitch"]["gm_db"] - 8.1) < 0.3
+    assert abs(m["roll"]["pm_deg"] - 49.5) < 1.0                    # unchanged axis: the control
+    r = {x.param: x for x in a.recommendations}
+    assert r["ATC_RAT_PIT_P"].method == "unchanged" and abs(r["ATC_RAT_PIT_P"].value - 0.129) < 1e-6
+    assert "deadband" in r["ATC_RAT_PIT_P"].note
+    for p in ("ATC_RAT_YAW_P", "ATC_RAT_YAW_I", "ATC_RAT_YAW_FLTE"):
+        assert math.isnan(r[p].value) and "not measured" in r[p].note, (p, r[p].note)
+    sec = tune_fuse.to_section(a)
+    gm = {x.name: x for x in sec.results}["yaw gain margin"]
+    assert gm.status == "SKIP" and "not measured" in gm.summary
 
 
 # ------------------------------------------------ the large-prop aircraft (issue #3)

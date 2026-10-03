@@ -9,6 +9,7 @@
     alog hover     flight.bin              # steady-hover chunks; --window hover uses one
     alog fft       flight.bin --plot fft.png
     alog compare   before.bin after.bin    # like-for-like, identical code both sides
+    alog tune      flight.bin [more.bin]   # recommended PID gains, with confidence
     alog types     flight.bin              # what messages this log actually contains
     alog fields    flight.bin ESC          # a message's fields, units and rate
     alog dump      flight.bin RATE --fields t,RDes,R --every 10
@@ -34,7 +35,7 @@ from . import __version__
 from .parser import Log, LogIntegrityError
 from .flight import airborne_window, flights, hover_chunks, WINDOW_METHODS
 from .analysis import ALL_CHECKS, run, Section
-from .checks import FAIL, PASS, SKIP, WARN, T
+from .checks import FAIL, PASS, SKIP, WARN, T, Result
 from .report import fmt, table
 
 CHECK_NAMES = [n for n, _ in ALL_CHECKS]
@@ -691,6 +692,111 @@ def _comparability(per):
     return reasons
 
 
+# ------------------------------------------------------------------ alog tune
+
+TUNE_AGGR_RANGE = (0.05, 0.2)          # AUTOTUNE_AGGR's own @Range
+
+
+def _tune_axes(text):
+    """`--axes roll,pitch` -> the axes in canonical order; anything unknown is exit 3."""
+    from .tune import AXES
+    wanted = [a.strip().lower() for a in (text or "").split(",") if a.strip()]
+    unknown = [a for a in wanted if a not in AXES]
+    if unknown or not wanted:
+        raise InputError(f"--axes {text!r}: expected a comma-separated subset of {', '.join(AXES)}"
+                         + (f"; unknown: {', '.join(unknown)}" if unknown else ""))
+    return tuple(a for a in AXES if a in wanted)
+
+
+def _tune_flights_result(log, w):
+    """The RULES section 1 WARN for a log holding more than one flight, worded as the
+    `flight` check words it, so `alog tune` on one flight of several is never exit 0.
+    None on a single-flight log."""
+    fl = _log_flights(log)
+    if len(fl) < 2:
+        return None
+    listing = "; ".join(f"{f['index']}: {f['t0']:.1f}-{f['t1']:.1f} s" for f in fl)
+    this = w.index
+    return Result(f"{os.path.basename(log.path)} flights in log", WARN,
+                  f"{len(fl)} flights ({listing}); this report covers "
+                  + (f"flight {this} of {len(fl)}" if this else "only part of the log")
+                  + f" ({w.t0:.1f}-{w.t1:.1f} s). Use --flight N for another; --flight all is not "
+                    "accepted by `tune` (one recommendation per aircraft, not per flight).",
+                  evidence=dict(n_flights=len(fl), flight_index=this, flights=fl),
+                  source=f"flight segmentation via {fl[0]['source']}")
+
+
+def cmd_tune(args):
+    """Recommended PID gains from one or more logs of one aircraft, with confidence.
+
+    Runs `tune_fuse.analyse` over every log (tier A AutoTune reconstruction, tier B
+    identified plant + virtual AutoTune, tier C step response and oscillation ceiling,
+    tier D parameter consistency) and prints the `tune` section once. When no axis has
+    any tier A/B/C evidence - the standard 10 Hz PID logging, no excitation, logs of
+    different aircraft - the refusal block of docs/pid-tuning-plan.md section 2.6 is the
+    first thing on stdout (or the JSON `error`) and the exit code is 3.
+    """
+    from . import tune_fuse
+    flight = _flight_arg(args)
+    if flight == "all":
+        raise InputError("--flight all is meaningless for `tune`: the recommendation is one gain "
+                         "set per aircraft, fused across every log given, not one per flight. "
+                         "Use --flight N, applied to every log.")
+    axes = _tune_axes(args.axes)
+    if args.aggr is not None and not (TUNE_AGGR_RANGE[0] <= args.aggr <= TUNE_AGGR_RANGE[1]):
+        raise InputError(f"--aggr {args.aggr:g}: AUTOTUNE_AGGR is {TUNE_AGGR_RANGE[0]:g}-{TUNE_AGGR_RANGE[1]:g}")
+    if args.prop_in is not None and not args.prop_in > 0:
+        raise InputError(f"--prop-in {args.prop_in:g}: the prop diameter must be positive inches")
+    logs = [_load(p, args) for p in args.logs]
+    windows = [_window(log, args, flight=flight) for log in logs]
+    names = [os.path.basename(p) for p in args.logs]
+    analysis = tune_fuse.analyse(logs, windows, axes=axes, prop_in=args.prop_in, aggr=args.aggr, log_names=names)
+    log_docs = [dict(d, integrity=log.diagnostics.to_dict()) for d, log in zip(analysis.logs, logs)]
+    identity = dict(ok=analysis.identity_ok, reasons=list(analysis.identity_reasons))
+
+    if tune_fuse.is_whole_tool_refusal(analysis):
+        if args.json:
+            _emit_json(_finite(dict(schema=SCHEMA_VERSION, tool="ardupilot-log-tools", version=__version__,
+                                    command="tune", error=tune_fuse.refusal_block(analysis, with_exit_line=False),
+                                    refusals=list(analysis.refusals),
+                                    logging_requirements=[d.get("requirements") or [] for d in analysis.logs],
+                                    logs=log_docs, identity=identity, exit_code=EXIT_INPUT)))
+        else:
+            print(tune_fuse.refusal_block(analysis, with_exit_line=True))
+        return EXIT_INPUT
+
+    sec = tune_fuse.to_section(analysis, whole_tool_refusal=False)
+    for log, w in zip(logs, windows):
+        r = _tune_flights_result(log, w)
+        if r is not None:
+            sec.add(r)
+    secs = [sec]
+    code = _exit_code(secs)
+    if args.json:
+        counts, bad = _verdict(secs)
+        _emit_json(_finite(_envelope("tune", logs=log_docs, identity=identity,
+                                     sections=[s.to_dict() for s in secs],
+                                     verdict=dict(counts=counts, findings=[r.to_dict() for r in bad]),
+                                     exit_code=code)))
+        return code
+    print("# alog tune\n")
+    print(f"{len(logs)} log(s) of one aircraft, fused into one recommendation per parameter. Axes: "
+          f"{', '.join(axes)}" + (f"; AUTOTUNE_AGGR overridden to {args.aggr:g}" if args.aggr is not None else "")
+          + (f"; prop {args.prop_in:g} in" if args.prop_in is not None else "") + ".\n")
+    for name, log, w in zip(names, logs, windows):
+        print(f"**{name}**")
+        print(_integrity_header(log))
+        print(f"Window: {w.t0:.1f}-{w.t1:.1f} s ({w.duration:.1f} s) via **{w.method}**.")
+        note = _flights_note(log, w)
+        if note:
+            print(note.rstrip("\n"))
+        print()
+    for s in secs:
+        print(s.render())
+    print(_verdict_md(secs))
+    return code
+
+
 def cmd_fft(args):
     from .spectral import analyse, sources, SpectralError
     log = _load(args.log, args)
@@ -813,6 +919,7 @@ def cmd_files(args):
 
 
 def cmd_schema(args):
+    from .tune import all_constants
     schema = dict(
         schema=SCHEMA_VERSION,
         description="Every JSON document alog emits carries schema, tool, version, command, and "
@@ -843,9 +950,20 @@ def cmd_schema(args):
         compare="`compare` adds comparable (bool) and reasons ([str]); exit 1 when the windows "
                 "are not like-for-like (methods differ, durations more than 2x apart, different "
                 "flight indices, or a fallback window)",
+        tune="`tune` takes one or more logs of one aircraft and has no single `log`: it adds "
+             "logs ([{file_name, path, integrity, window, firmware, version, board, mcu, frame_class, "
+             "frame_type, boot_time_unix, integrity_ok, contributed: [tiers], refusals: [codes], "
+             "requirements: [logging-requirement rows]}]), identity ({ok, reasons}) and one section "
+             "(key `tune`) in `sections`. When no axis has tier A/B/C evidence the document is the "
+             "error shape (`error` is the refusal block) plus refusals ([{code, message, fix, axis, "
+             "log_name, requirements}]), logging_requirements (one list per log), logs and identity, "
+             "exit_code 3. Confidence thresholds are `thresholds.tune_*`; algorithm constants are "
+             "`tune_constants`",
         thresholds={k: dict(warn=v["warn"], fail=v["fail"], source=v["source"], note=v["note"]) for k, v in T.items()},
+        tune_constants={k: dict(value=v["value"], source=v["source"], note=v.get("note", ""))
+                        for k, v in all_constants().items()},
     )
-    _emit_json(schema)
+    _emit_json(_finite(schema))
     return 0
 
 
@@ -896,7 +1014,7 @@ def main(argv=None):
     p = sub.add_parser("all", help="run every check")
     add_common(p)
     for name, fn in ALL_CHECKS:
-        if name == "integrity":          # has its own richer subcommand above
+        if name in ("integrity", "tune"):    # each has its own richer subcommand (tune: multi-log, below)
             continue
         q = sub.add_parser(name, help=(fn.__doc__ or "").strip().split("\n")[0] or f"{name} check")
         add_common(q)
@@ -931,6 +1049,18 @@ def main(argv=None):
     add_window(q)
     q.add_argument("--raw-factors", action="store_true")
     q.add_argument("--arm-mm", type=float, default=None, metavar="MM")
+    q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
+    q = sub.add_parser("tune", help="Recommended PID gains from one or more logs, with confidence")
+    q.add_argument("logs", nargs="+", help="one or more logs of ONE aircraft (an AutoTune session, tuning-profile "
+                                           "flights, a SysID sweep); any order, they are put in boot-time order")
+    add_window(q)
+    q.add_argument("--axes", default="roll,pitch,yaw", metavar="AXES",
+                   help="comma-separated subset of roll,pitch,yaw (default all three)")
+    q.add_argument("--aggr", type=float, default=None, metavar="AGGR",
+                   help="override the logs' AUTOTUNE_AGGR for the virtual AutoTune (0.05-0.2; the report says so)")
+    q.add_argument("--prop-in", type=float, default=None, metavar="INCHES",
+                   help="prop diameter in inches: adds the Mission Planner initial-parameter calculator as a "
+                        "configured-vs-calculator table")
     q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     q = sub.add_parser("fft", help="local FFT (scipy) of a logged signal, peaks labelled in motor orders")
     q.add_argument("log")
@@ -970,7 +1100,7 @@ def main(argv=None):
 
     dispatch = {"info": cmd_info, "integrity": cmd_integrity, "types": cmd_types, "fields": cmd_fields,
                 "dump": cmd_dump, "params": cmd_params, "compare": cmd_compare, "fft": cmd_fft,
-                "files": cmd_files, "schema": cmd_schema, "hover": cmd_hover}
+                "files": cmd_files, "schema": cmd_schema, "hover": cmd_hover, "tune": cmd_tune}
     try:
         if args.cmd in dispatch:
             return dispatch[args.cmd](args)

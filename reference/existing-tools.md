@@ -127,6 +127,30 @@ post-filter response from the configured notch) is the best interactive spectral
 the ecosystem; HardwareReport decodes `WDOG`, internal errors and `DSF.Dp` dropped
 records, which `coverage` now reports too.
 
+### PID tuning tools
+
+Surveyed 2026-09-16 for `alog tune`; the constants, formulas and the reasoning are in
+`reference/pid-tuning-sources.md` (§7 is the tool-by-tool table) and the design that
+rests on them in `docs/pid-tuning-plan.md`.
+
+| tool | what it does | what it does not do |
+|---|---|---|
+| **PID-Analyzer** (Plasmatree, Betaflight) | Wiener deconvolution of setpoint → gyro in 1 s Hann frames, cumulative sum to a unit step response; frames under 20 deg/s dropped, ≥ 10 required | recommends nothing; needs ≥ 1 kHz |
+| **PIDtoolbox** (Betaflight) | stick-release step windows, later the same Wiener method; rise 10–90 %, peak, settling ±2 %, latency | recommends nothing |
+| **PIDReview** (ArduPilot WebTools) | `PIDx.Tar/Act` at fast rate, one set per `PARM` change, batches on gaps, Welch `H = Y X*/(X X*)` with every window as a "shadow", PID-Analyzer's step port | interactive; "unless there is good consistency between your shadows it's probably not trustworthy"; no gains |
+| **AnalyticTune** (ArduPilot WebTools) | SysID chirp (`SID_AXIS` 10–12) frequency response, coherence as the data-quality gate, 6 dB / 45° margin targets | interactive; its 0.05–5 Hz sweep is for the attitude loop and stops far below a small quad's rate-loop crossover; no gains |
+| **PX4 mc_autotune** (+ `flight_review`) | onboard RLS ARX(2,2,1) with a covariance convergence gate, GMVC pole placement, sanity bounds; flight_review ports PID-Analyzer | onboard with its own excitation; not applicable to an existing ArduCopter log |
+| **fpvpidlab** (Betaflight) | explicit step detection; rule-based ±5–15 % changes from overshoot, rise, ringing, steady-state error; coherence gate 0.5; confidence downgraded below 3 steps | Betaflight units and rules; no ArduCopter criteria |
+| ArduPilot AutoTune / QuickTune / heli AutoTune | the firmware's own searches: twitch (Copter), relay on `SRate` (QuickTune), frequency response (Heli) | onboard only; nothing reads them back out of a log |
+
+None of them computes ArduCopter gains from a log, states a confidence, or refuses a log
+that cannot support the question. `alog tune` takes the deconvolution and its constants
+from PID-Analyzer/PIDReview, the coherence gate and margin targets from AnalyticTune and
+fpvpidlab, the `SRate` ceiling from QuickTune, the joint input/output estimate and its
+random-error formula from Bendat & Piersol, and the gain criteria from
+`AC_AutoTune_Multi.cpp` itself — reproducing the firmware's search on the identified
+plant rather than inventing an "optimal" formula.
+
 ### Wiki rules of thumb encoded here
 
 VIBE < 30 m/s² ok, > 60 nearly always a problem; clip counts ideally 0; mag field 120–550
@@ -147,6 +171,11 @@ for 1 s; `FFT_SNR_REF` 25 dB and the 40 dB motor-noise warning; ERR subsystem/co
 - Airborne-window discipline everywhere: LogAnalyzer's GPS/HDOP/compass/vibration
   thresholds run over the whole log including the bench; dronekit-la gates only three
   analysers on `is_flying()`.
+- PID gains from a log with a confidence built from named components — AutoTune's own
+  criteria run on an identified plant, an AutoTune session reconstructed from `ATUN` and
+  checked against `MSG`, and a refusal (`PID_RATE_TOO_LOW` and friends) that prints the
+  exact parameters to set when the log cannot support the question. Every surveyed tool
+  either plots the response and leaves the gain to the reader, or tunes onboard.
 
 ---
 

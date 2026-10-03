@@ -107,8 +107,9 @@ they came from, because two bare `motor balance` WARNs with no flight attached w
 exactly the ambiguity this key exists to remove. `exit_code` is the worst across all
 flights.
 
-`--flight all` is rejected (exit 3) on `dump`, `fft` and `compare`: one CSV, one transform
-or one comparison table of two disjoint flights is not a thing.
+`--flight all` is rejected (exit 3) on `dump`, `fft`, `compare` and `tune`: one CSV, one
+transform, one comparison table or one recommended gain set of two disjoint flights is not
+a thing.
 
 ## Other commands
 
@@ -121,10 +122,11 @@ or one comparison table of two disjoint flights is not a thing.
 | `dump MSG` | `message`, `n`, `rows: [ {field: value} ]` |
 | `params` | `n`, `params: {name: {value, default}}`, `changes: [{t, name, old, new}]`; with `--diff`: `diff_file`, `unparsed_lines`, `differences: [{name, in_log, in_file, note}]` |
 | `compare` | `logs: [{file_name, path, integrity, window}]`, `comparable` (bool), `reasons: [str]` (why not), `checks: [{name, per_log: [result or null]}]`, `exit_code` (1 when not comparable); `--flight N` applies to every log, `--flight all` is rejected |
+| `tune` | no single `log`: `logs: [{file_name, path, integrity, window, firmware, version, board, mcu, frame_class, frame_type, boot_time_unix, integrity_ok, autotune_axes, contributed: [tiers A/B/C/D this log fed], refusals: [codes], requirements: [logging-requirement rows], errors}]`, `identity: {ok, reasons}`, `sections: [the one `tune` section]` (tables `recommendations`, `ceilings`, `step`, `plant`, `margins`, `autotune`, `params`, `calculator` with `--prop-in`, `refusals`, `logs`), `verdict`, `exit_code`; `--flight N` applies to every log, `--flight all` is rejected; a log holding several flights adds a `<file> flights in log` WARN. Whole-tool refusal: the refusal document below, exit 3 |
 | `hover` | `chunks: [{index, t0, t1, duration_s, method, flight_index}]`, `flights`; exit 1 when the log holds no hover chunk |
 | `fft` | `fft: {source, fs_hz, band_hz, timing, esc_fundamental_hz, peaks: {axis: [{freq_hz, psd, db_above_floor, prominence_db, order}]}, warnings, spectrum (with --spectrum), plot, csv}`; with `--list-sources`: `sources` |
 | `files` | `files: [{name, bytes}]`, `written: [path]` |
-| `schema` | `exit_codes`, `result`, `section`, `integrity`, `window`, `flights`, `per_flight`, `checks`, `window_methods`, `thresholds` |
+| `schema` | `exit_codes`, `result`, `section`, `integrity`, `window`, `flights`, `per_flight`, `checks`, `window_methods`, `compare`, `tune`, `thresholds`, `tune_constants: {name: {value, source, note}}` (the PID-tuning algorithm constants, every one with its provenance) |
 
 ## Errors
 
@@ -138,3 +140,34 @@ Exit codes: `0` every result PASS or SKIP; `1` at least one WARN; `2` at least o
 dataflash log, unknown check or message, impossible window, or `--strict` refused the log).
 `fft` exits `1` when it emits a warning (Nyquist below the motor fundamental, no peaks, no
 ESC telemetry for orders).
+
+### `tune`: the refusal document
+
+When no axis has any tier A/B/C evidence - the standard 10 Hz PID logging, no
+excitation, logs of different aircraft - `alog tune` exits `3` and emits the error shape
+above with four more keys, so the refusal carries everything the operator needs to fix
+it (docs/pid-tuning-plan.md section 2.6):
+
+```json
+{ "schema": "alog/2", "tool": "ardupilot-log-tools", "version": "2.0.0", "command": "tune",
+  "error": "ERROR: these log files cannot be used for PID tuning.\n  flight.bin: PID_RATE_TOO_LOW - PIDR logged at 10.0 Hz over 77.4-277.8 s; 100 Hz needed (200 Hz recommended) [roll, pitch, yaw]\nSet these ArduCopter parameters and fly the tuning profile (SKILLS.md, 'Recommend PID gains'):\n  LOG_BITMASK       180222 -> 180223  (bit 0 ATTITUDE_FAST + bit 12 PID: loop-rate RATE/PID logging)\n  ...",
+  "refusals": [ { "code": "PID_RATE_TOO_LOW", "message": "...", "fix": "Set these ArduCopter parameters ...",
+                  "axis": "roll", "log_name": "flight.bin",
+                  "requirements": [ { "param": "LOG_BITMASK", "current": 180222, "required": "180223",
+                                      "ok": false, "why": "...", "tier": "B, C", "rule": "bitmask" }, ... ] } ],
+  "logging_requirements": [ [ ...the evaluated requirement rows of log 1... ], ... ],
+  "logs": [ { "file_name": "flight.bin", "integrity": { ... }, "window": { ... }, "contributed": ["D"],
+              "refusals": ["PID_RATE_TOO_LOW"], "requirements": [ ... ], "...": "..." } ],
+  "identity": { "ok": true, "reasons": [] },
+  "exit_code": 3 }
+```
+
+`error` is the same block the markdown prints as its first lines (minus the `exit code 3`
+line). `refusals` is one entry per (code, log, axis), in the order the tiers found them;
+`refusals[0].code` is the headline (`DIFFERENT_AIRCRAFT` when the identity gate failed,
+and then `identity.ok` is `false` and `identity.reasons` say which parameter differs).
+`logging_requirements` is one list per log, in the order the logs were given, of the
+`tune.LOGGING_REQUIREMENTS` table evaluated against that log: `current` is `null` when
+the parameter is not in the log, `ok` is `null` when it could not be judged. A refusal
+that leaves *some* axis usable is not this document: the report is emitted with a
+`<axis> insufficient data` WARN and the refusals in the section's `refusals` table.

@@ -49,7 +49,7 @@ airborne-only. Not a contradiction, but it cost a paragraph of explanation that 
 method would have prevented.
 
 **A log can hold more than one flight, and a window that spans two is not a window.** On
-a two-flight log (`2026-09-04 16-39-48.bin`: 64.5-255.9 s and 285.3-360.4 s, 30 s of
+a two-flight log (`two-flights.bin`: 64.5-255.9 s and 285.3-360.4 s, 30 s of
 ground time between them) `alog all --window rpm` reported `notch 0 tracking` **FAIL**,
 p95 error 1.234 of the fundamental, and `notch 0 harmonic lock-on` **FAIL**, 6.9 % of the
 window above 1.5x. Both were pure artefacts of the ground time inside the window, where
@@ -159,6 +159,37 @@ with it. One flight moved it 0.3208 → 0.2626, leaving a pinned reference 23 % 
 
 ## Notch and batch logging
 
+**Level hover does not rule out wind.** Holding position in a steady breeze is still flying
+through the air: the motors facing the breeze are loaded differently, and the trim reads
+like a CG offset. `trim vs level hover` used to call equal figures "static asymmetry". On
+2026-09-30 Brisket flew twice on the same pack with the battery never unstrapped. Level-hover
+pitch/roll trim was 20.6/12.7 µs facing 178° (`brisket-t1`), then 35.2/0.2 µs facing 159° (`brisket-t2`)
+in a light breeze, and the `cg` table moved from 3.75 % to 5.11 % forward. A 19° heading
+change cannot rotate an airframe-fixed trim that far. `trim vs heading` fits airframe-fixed
+plus earth-fixed parts per heading bin, and says when the hover faced too few headings to
+separate them. Neither flight could.
+
+**A narrow band cannot see the high-frequency lag.** Brisket's yaw was coherent over 0.5–3.5 Hz
+only (brisket-t2). The fit pinned `tau2` at 1 ms and the delay at 0, while roll and pitch on the
+same motors read 39 ms and 14 ms. Forcing those values in made the fit worse (22° vs 13.7°
+phase), so the data simply does not constrain them. The virtual AutoTune then proposed yaw
+P 0.18 → 0.48 at confidence 0.70 on a "36 dB" gain margin read at 21 Hz. The pooled run
+refused the same axis. Margins read outside the band on pinned lag are now `SKIP ... not
+measured`, and a rate set that relies on them is withheld.
+
+**Two flights, same gains, different recommendations.** Re-identifying the same aircraft on
+two flights moved the margin-ceiling P 3–4 % and the plant gain 4 %. The unchanged roll loop
+moved 0.9° of PM. Recommendations inside ±5 % now read "no change", except while the current
+loop misses the margins: there the −4.6 % pitch change was the correction, and it was flown
+and measured (43.1° → 46.2°).
+
+**A per-motor notch writes `FCN`, not `FCNS`.** With `INS_HNTCH_OPTS` bit 1 (one notch per
+motor) ArduCopter logs `FCN` (`I NF CF1..CF6 HF1..HF6`) and no `FCNS`. The `notch` check
+used to report a working notch as "enabled but not logged" and advise a logging change.
+On Brisket `brisket-t1.bin`, `CFk` tracked ESC k-1's RPM/60 to 0.15 % median
+(1.1 % p95). Since 2026-09-30 the check falls back to `FCN` and compares each centre with
+its own ESC.
+
 **`FTN1.PkAvg` is the FFT's opinion; `FCNS.CF` is what the notch applied.** They are the
 same series only when `INS_HNTCH_MODE=4`. Measuring the FFT to judge a change of notch
 *source* is the wrong question — switching what consumes the FFT cannot change the FFT's
@@ -265,7 +296,7 @@ in it, may have covered ground time or a single flight without saying so.
 
 **`--window rpm` is only as good as its floor.** On a low-KV / large-prop aircraft
 that cruises below 5400 RPM the fleet-mean fundamental spends most of the flight *under*
-a fixed 90 Hz floor: on `2026-08-06 18-21-35.bin` only 455 of 26,418 ESC samples clear it,
+a fixed 90 Hz floor: on `brisket-l1.bin` only 455 of 26,418 ESC samples clear it,
 in bursts separated by 32 s and 55 s of sub-floor flight, so the segmenter reported three
 flights (five on a later log) where the EV land detector reported one. Fixed 2026-09-14
 (issue #3): the floor is derived from the log as 60 % of the spinning median - ~50 Hz on
@@ -319,3 +350,91 @@ model and no assumptions, and it is the fastest way to catch a bad `BATT_AMP_PER
 falls as charge is consumed, not only as current rises, and over a flight that trend
 dominates. Fit `V = OCV₀ − α·Q − R·I` instead: on one flight the naive slope was 40.0 mΩ and
 the corrected one 33.8 mΩ, and the naive figure had been used to argue a sensor read 2× high.
+
+---
+
+## PID tuning (added September 2026)
+
+**The standard `LOG_BITMASK` logs `PIDx`, `RATE` and `ATT` at 10 Hz.** 180222 — the value
+on both development aircraft — is bits 1–13, 15 and 17 with **no bit 0** (ATTITUDE_FAST),
+so the rate loop is logged at 10 Hz while its filters sit at 20–40 Hz. All 16 reference
+logs in `LOG_DIR` / `LOG_DIR_LARGE` are refused `PID_RATE_TOO_LOW` for this reason, and
+the Circuit log of 2026-09-03 was refused with `INS_LOG_BAT_MASK 1 -> 0` on the same
+block: batch logging had been left on from a notch flight. 180223 adds bit 0; AutoTune
+and SysID modes log at loop rate regardless of the bitmask. Fast logging roughly doubles
+the log rate, so set bit 0 back on an onboard-flash board. The full table is `SKILLS.md`
+Skill 7 and `tune.LOGGING_REQUIREMENTS`.
+
+**`PIDx.Tar/Act/Err` are rad/s; `RATE` is deg/s.** `PIDx` logs the rate PID's own
+values, and the rate PIDs work in rad/s. The FMTU declares no unit for them. On the
+first fast-logged flight (Brisket, `brisket-t1.bin`, V4.7.0-dev 259b79c3)
+`PIDR.Act × 57.2958` equals `RATE.R` sample for sample. The tool was first written
+assuming deg/s, so its 20 deg/s excitation gate became 20 rad/s: that flight was refused
+`NO_EXCITATION` on every axis, and the SRate ceiling cut P by 60 %. Both were artefacts.
+Since 2026-09-30, `extract_axes` converts at extraction and `tests/tunesynth.py` writes
+rad/s, as the firmware does.
+
+**Firmware bookkeeping is not an in-flight tune change.** AP_Stats re-saves `STAT_*` every
+~30 s, `MOT_THST_HOVER` is saved on disarm, and the ground pressure and gyro calibration are
+rewritten around arming. On Brisket `brisket-t1.bin` these made 28 "in-flight
+changes" and a WARN that the tune had changed mid-flight. `analysis.FIRMWARE_MAINTAINED`
+lists them: `paramcheck` shows them with kind `firmware` and warns only on the rest.
+
+**`PIDx.TimeUS` is the write time; `RATE`/`ANG` carry the loop start.** On the same
+log, `RATE` and `ANG` sit at 2.500 ms ± 0.02 ms. `PIDR`/`PIDP`/`PIDY` have the same
+111 597 records, but each is stamped 0.4–1.7 ms after its own `RATE` tick: 39 % jitter
+by the `sample_rate` rule, with no record dropped. The jitter gate used to refuse it
+`IRREGULAR_SAMPLING`. `extract_axes` now restamps PIDx to the `RATE` tick when every
+record falls in a distinct, consecutive tick, and refuses as before when any tick is
+skipped or doubled. `AxisSignals.clock` says `RATE` and `raw_jitter` keeps the original
+figure.
+
+**A P-only ceiling is not a ceiling on a loop with D.** Heli AutoTune sizes P at the
+frequency where the plant phase is −161°, as if P were the only term. On the Brisket roll
+plant (`brisket-t1.bin`) that put the P ceiling at 0.138, while the flown P 0.135
+keeps PM 48.6° / GM 8.9 dB, because D's phase lead is ignored. Fusion then clipped the
+virtual AutoTune's P 0.196 to 0.4 × 0.138 = 0.055 (−59 %, PM 86°) at confidence 0.70.
+The clip was discontinuous (0.137 would have stood, 0.139 became 0.055), and the 0.196 it
+started from gives PM 34°. Since 2026-09-30 the ceiling is the largest P or D whose full
+`C(z) G` loop keeps 45° / 6 dB (`tune_ident.margin_ceilings`). A value above it is clipped
+*to* it. 0.4 × is kept for oscillation ceilings only. The applied P/I/D set is re-checked
+and withheld if it fails. Angle P found on an unclipped rate loop is withheld too. On
+that log: roll P 0.153 / D 0.0044, pitch P 0.129 / D 0.0035, both at PM 45°.
+
+**`ATT` is 10 Hz; `ANG` is the loop-rate attitude.** `ATT` is written by AHRS at 10 Hz on
+every firmware, master included; `ANG` is written at loop rate with bit 0, and its
+`DesRoll` is the *shaped* (jerk-limited) target, not the raw stick. Older firmware has
+only `ATT`. A step response or a target-vs-actual comparison taken from `ATT` is a 10 Hz
+picture of a 400 Hz loop. The tool prefers `ANG` and states which it read.
+
+**`ATC_ACCEL_x_MAX` is cdeg/s²; `ATC_ACC_x_MAX` is deg/s².** The 4.x and master
+spellings differ by 100×. The Circuit quad (V4.7.1 dbe79216) already lacks
+`ATC_ACCEL_R_MAX`; the Brisket quad (V4.7.0-dev 259b79c3) has it at 116700 — which is
+the Mission Planner calculator's 10-inch value, 1167 deg/s² in the other spelling. Read
+both, convert once, and say which was found (`GainSet.param_names`); the recommendation
+is written back in the log's own spelling and unit.
+
+**`ATUN.ddt` is unscaled cdeg/s² despite its unit tag.** Divide by 100 for deg/s². It is
+each twitch's own peak acceleration, overwritten per test, not a running maximum; the
+`MSG` line `Max Accel:` is cdeg/s² on every branch too. This is the source of
+`ATC_ACC_x_MAX` in a reconstruction.
+
+**A hover-only log gives high coherence and a biased plant.** With no stick input the
+reference `PIDx.Tar` is the angle loop reacting to gyro noise, not an exogenous input:
+on a 60 s simulated hover the mean coherence over 0.5–40 Hz read ~1.0 and the plant
+estimate is biased toward `−1/C`. Coherence is necessary, not sufficient — the bins just
+above a chirp's stop frequency are coherent through window leakage and off by more than
+2 dB. Two consequences: `identify()` gates on excitation *before* coherence, so a hover
+is `NO_EXCITATION` rather than a confident wrong model; and the AnalyticTune chirp of
+0.05–5 Hz, which gave a coherent band of 0.5–7.5 Hz against a 23 Hz rate-loop crossover
+on the simulated 5-inch plant, is `NO_COHERENCE` by design. `SID_F_STOP_HZ 40`.
+
+**AutoTune's overshoot and bounce criteria apply to its test gains, not the final loop.**
+A twitch flies with `I = 0.01 P`, `FLTT 0`, `FF 0` and the gains *before* the backoff;
+the step response deconvolved from a log is the final closed loop with I active and the
+backed-off gains. The exact oracle step of AutoTune's own result on the simulated plant
+reads `overshoot_ratio` 2.4 and `bounce_ratio` 1.9 — "fail" by a literal reading of the
+0.5 × AGGR / AGGR criteria — and the deconvolved curve reads 6–10 and 2.5–4.5. Until the
+ratios are calibrated on a real fast-logged flight the `step-rules` confidence is capped
+at 0.39 (always withheld), the ratios are reported beside their thresholds but not graded,
+and the step rules never set another tier's agreement. Read them as direction only.

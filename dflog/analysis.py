@@ -17,7 +17,10 @@ Rules every check here follows, and any new one must too:
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
+import pandas as pd
 
 from .checks import T, Result, PASS, WARN, FAIL, SKIP
 from .flight import (EVENTS, airborne_window, esc_fundamental, events, flights, hover_chunks,
@@ -31,7 +34,7 @@ __all__ = ["Section", "ALL_CHECKS", "run", "check_summary", "check_integrity",
            "check_pids", "check_ekf", "check_compass", "check_power", "check_gps",
            "check_cpu", "check_events", "check_gust_response", "check_batch_fft",
            "check_fft", "check_imu", "check_brownout", "check_params", "check_flight",
-           "check_estimates"]
+           "check_estimates", "check_tune"]
 
 
 class Section:
@@ -251,8 +254,9 @@ def check_coverage(log, w):
     key_msgs = [
         ("ATT", "attitude"), ("RATE", "rate loop"), ("IMU", "IMU (filtered)"),
         ("GYR", "raw gyro"), ("ACC", "raw accel"), ("ISBD", "batch IMU"), ("VIBE", "vibration"),
-        ("RCOU", "motor outputs"), ("ESC", "ESC telemetry"), ("FCNS", "notch centre"),
-        ("FTN1", "in-flight FFT"), ("PIDR", "PID roll"), ("CTUN", "throttle/alt"),
+        ("RCOU", "motor outputs"), ("ESC", "ESC telemetry"), ("FCNS", "notch centre"), ("FCN", "notch centres (per motor)"),
+        ("FTN1", "in-flight FFT"), ("PIDR", "PID roll"), ("PIDP", "PID pitch"), ("PIDY", "PID yaw"),
+        ("ANG", "attitude (loop rate)"), ("ATUN", "AutoTune"), ("CTUN", "throttle/alt"),
         ("XKF4", "EKF innovations"), ("AHR2", "DCM attitude"), ("MAG", "compass"), ("GPS", "GPS"),
         ("BAT", "battery"), ("POWR", "board power"), ("PM", "scheduler"), ("RCIN", "RC input"),
         ("MODE", "modes"), ("EV", "events"), ("ERR", "errors"), ("MSG", "messages"),
@@ -410,13 +414,17 @@ def check_motors(log, w, normalise=True, arm_mm=None):
                 sec.note("CG offset from per-motor RPM medians with thrust ~ RPM^2: r = (mean front RPM / "
                          "mean rear RPM)^2 and the offset is (r-1)/(r+1) of the fore-aft arm - the distance "
                          "from the CG to the front (or rear) motor line - and likewise left/right for roll. "
+                         "It assumes still air: a steady breeze loads the motors facing it differently even "
+                         "while the aircraft holds position, and reads as CG here (`trim vs heading` separates "
+                         "the two when the hover covered enough headings). "
                          + (f"Arm {arm_mm:g} mm was given, so the mm column is the distance to move the CG "
                             "(a battery shift of that much the other way)." if arm_mm else
                             "Pass --arm-mm (CG to front motor line, mm) to get millimetres."))
             else:
                 sec.note("CG offset needs ESC RPM for every motor (thrust ~ RPM^2); this log has none, so "
                          "only the microsecond trim is available.")
-            _trim_vs_hover(log, w, rcou, chans, mix, tr, sec)
+            hov = _trim_vs_hover(log, w, rcou, chans, mix, tr, sec)
+            _trim_vs_heading(log, w, rcou, chans, mix, hov, sec)
             sec.note(f"Mix: {mix.label}"
                      f"{'' if normalise else ' [un-normalised cos factors, legacy mode]'}\n"
                      "Channel -> motor map from SERVOn_FUNCTION: "
@@ -536,6 +544,11 @@ def check_motors(log, w, normalise=True, arm_mm=None):
 # "Level" for the hover cross-check. Not a graded threshold: it selects samples.
 LEVEL_DEG = 3.0
 HOVER_MIN_SECONDS = 5.0
+#: `_trim_vs_heading`: heading bin width, level hover needed per bin, and the heading span
+#: three bins must cover before a CG offset and a steady breeze can be told apart.
+HEADING_BIN_DEG = 45.0
+HEADING_MIN_SECONDS = 5.0
+HEADING_MIN_SPAN_DEG = 90.0
 
 
 def _cg_offset(esc, w, mix, chans):
@@ -571,15 +584,20 @@ def _trim_vs_hover(log, w, rcou, chans, mix, tr, sec):
 
     A trim taken over the whole window can be a translation artefact - sustained forward
     flight loads the pairs unevenly. Over steady hover with |roll|,|pitch| < LEVEL_DEG it
-    cannot be. Identical figures mean a static asymmetry; different ones mean the trim
-    depends on translating. Uses hover_chunks() when the log has any, level-attitude
-    samples otherwise, and says which.
+    cannot be. Different figures mean the trim depends on translating. Identical ones do NOT
+    prove a CG offset: holding position in a steady breeze is still flying through the air
+    (2026-09-30, Brisket, battery untouched: pitch/roll trim 20.6/12.7 us at 178 deg, then
+    35.2/0.2 us at 159 deg four hours later, both identical in level hover).
+    `_trim_vs_heading` separates the two. Uses hover_chunks() when the log has any,
+    level-attitude samples otherwise, and says which.
+
+    Returns (mask over RCOU samples, source text) for `_trim_vs_heading`, or None.
     """
     name = "trim vs level hover"
     att = w.clip(log.df("ATT"))
     if att is None or att.empty or not {"Roll", "Pitch", "t"} <= set(att.columns) or len(att) < 2:
         sec.add(Result(name, SKIP, "ATT not logged, so level hover cannot be isolated from the window"))
-        return
+        return None
     t = rcou["t"].values
     roll = np.interp(t, att["t"].values, att["Roll"].values)
     pitch = np.interp(t, att["t"].values, att["Pitch"].values)
@@ -601,11 +619,11 @@ def _trim_vs_hover(log, w, rcou, chans, mix, tr, sec):
     if seconds < HOVER_MIN_SECONDS or mask.sum() < 10:
         sec.add(Result(name, SKIP, f"only {seconds:.1f} s of level hover in the window (need "
                                    f"{HOVER_MIN_SECONDS:g} s) - the trim cannot be cross-checked"))
-        return
+        return None
     means = [float(rcou[c].values[mask].mean()) for c in chans if c in rcou.columns]
     if len(means) != mix.n:
         sec.add(Result(name, SKIP, "not every motor channel is in RCOU"))
-        return
+        return None
     th = trim_decomposition(means, mix)
     axes = ("roll", "pitch", "yaw")
     diffs = {ax: float(th[ax] - tr[ax]) for ax in axes}
@@ -617,14 +635,85 @@ def _trim_vs_hover(log, w, rcou, chans, mix, tr, sec):
     sec.add(_grade(worst, "trim_hover_diff_us", name=name,
                    summary_fmt="largest axis difference {v} us between the whole window and level hover "
                                "(warn {w}, fail {f}): "
-                               + ("static asymmetry - the trim is the same when the aircraft stops "
-                                  "translating" if static else
+                               + ("the same in level hover: a CG/airframe asymmetry or a steady breeze (holding "
+                                  "position in wind is still flying through air) - `trim vs heading` separates "
+                                  "them" if static else
                                   "the trim changes when the aircraft stops translating - a translation "
                                   "artefact or wind, not a static CG/blade asymmetry")
                                + "; pitch %+.1f -> %+.1f us, roll %+.1f -> %+.1f us over %.0f s of %s"
                                % (tr["pitch"], th["pitch"], tr["roll"], th["roll"], seconds, src),
                    window={ax: float(tr[ax]) for ax in axes}, hover={ax: float(th[ax]) for ax in axes},
                    difference=diffs, seconds=seconds, samples=int(mask.sum()), source_samples=src))
+    return mask, src
+
+
+def _trim_vs_heading(log, w, rcou, chans, mix, hov, sec):
+    """Split the level-hover trim into a part fixed to the airframe (CG, a blade, a motor
+    mount) and a part fixed to the earth (a steady breeze), from how it varies with heading.
+
+    Per HEADING_BIN_DEG bin of ATT.Yaw with at least HEADING_MIN_SECONDS of level hover, the
+    heavy-side vector d = (pitch trim, -roll trim) in body axes (x forward, y right) is fitted
+    as d = C + R(yaw)^T W: C turns with the aircraft, W stays put in the earth frame. It needs
+    three bins spanning HEADING_MIN_SPAN_DEG; a hover facing one way cannot tell the two
+    apart, and the check says so rather than calling the trim a CG offset.
+    """
+    name = "trim vs heading"
+    att = w.clip(log.df("ATT"))
+    if hov is None or att is None or att.empty or "Yaw" not in att.columns:
+        sec.add(Result(name, SKIP, "no level-hover samples with ATT.Yaw - CG and wind cannot be separated"))
+        return
+    mask, src = hov
+    t = rcou["t"].values
+    yaw_u = np.unwrap(np.radians(att["Yaw"].values))
+    yaw = np.mod(np.interp(t, att["t"].values, yaw_u), 2 * np.pi)[mask]
+    M = np.column_stack([rcou[c].values for c in chans])[mask]
+    dt = float(np.median(np.diff(t))) if t.size > 1 else 0.0
+    bins, rows = [], []
+    edges = np.radians(np.arange(0.0, 360.0 + HEADING_BIN_DEG, HEADING_BIN_DEG))
+    for a, b in zip(edges[:-1], edges[1:]):
+        m = (yaw >= a) & (yaw < b)
+        if m.sum() * dt < HEADING_MIN_SECONDS:
+            continue
+        td = trim_decomposition(M[m].mean(axis=0), mix)
+        psi = float(np.angle(np.exp(1j * yaw[m]).mean())) % (2 * np.pi)
+        bins.append((psi, float(td["pitch"]), -float(td["roll"]), float(m.sum() * dt)))
+        rows.append([f"{np.degrees(a):.0f}-{np.degrees(b):.0f}", round(np.degrees(psi), 1), round(m.sum() * dt, 1),
+                     round(td["roll"], 1), round(td["pitch"], 1)])
+    if rows:
+        sec.table("trim_heading", ["heading bin (deg)", "mean yaw", "seconds", "roll trim (us)", "pitch trim (us)"],
+                  rows, align=["l", "r", "r", "r", "r"])
+    hd = np.sort([np.degrees(b[0]) for b in bins])
+    span = float(360.0 - max(np.diff(np.concatenate([hd, hd[:1] + 360.0])))) if len(hd) > 1 else 0.0
+    if len(bins) < 3 or span < HEADING_MIN_SPAN_DEG:
+        sec.add(Result(name, SKIP,
+                       f"level hover covered {len(bins)} heading bin(s) of {HEADING_BIN_DEG:g} deg with >= "
+                       f"{HEADING_MIN_SECONDS:g} s each, spanning {span:.0f} deg (need 3 spanning "
+                       f"{HEADING_MIN_SPAN_DEG:g}): a CG offset and a steady breeze cannot be told apart, so the "
+                       "trim and the CG offset above are the sum of both. To separate them hover ~20 s facing "
+                       "each of four headings (N, E, S, W), sticks centred",
+                       evidence=dict(bins=len(bins), span_deg=span, source_samples=src)))
+        return
+    psi = np.array([b[0] for b in bins])
+    dx, dy, wt = (np.array([b[i] for b in bins]) for i in (1, 2, 3))
+    n = len(bins)
+    A = np.zeros((2 * n, 4))
+    A[:n] = np.column_stack([np.ones(n), np.zeros(n), np.cos(psi), np.sin(psi)])
+    A[n:] = np.column_stack([np.zeros(n), np.ones(n), -np.sin(psi), np.cos(psi)])
+    y = np.concatenate([dx, dy])
+    sw = np.sqrt(np.concatenate([wt, wt]))
+    sol, *_ = np.linalg.lstsq(A * sw[:, None], y * sw, rcond=None)
+    resid = float(np.sqrt(np.average((y - A @ sol) ** 2, weights=np.concatenate([wt, wt]))))
+    cg_pitch, cg_roll = float(sol[0]), float(-sol[1])
+    wind = float(np.hypot(sol[2], sol[3]))
+    bearing = float(np.degrees(np.arctan2(sol[3], sol[2])) % 360.0)
+    worst = max(abs(cg_pitch), abs(cg_roll))
+    tail = ("; earth-fixed part %.1f us, heavier on the side facing %.0f deg (a steady breeze); fit residual "
+            "%.1f us over %d heading bins spanning %.0f deg" % (wind, bearing, resid, n, span))
+    sec.add(_grade(worst, "trim_us", name=name,
+                   summary_fmt=(f"airframe-fixed trim pitch {cg_pitch:+.1f} us, roll {cg_roll:+.1f} us "
+                                "(largest {v}, warn {w}, fail {f})" + tail),
+                   airframe=dict(pitch=cg_pitch, roll=cg_roll), earth=dict(magnitude=wind, bearing_deg=bearing),
+                   residual_us=resid, bins=n, span_deg=span, source_samples=src))
 
 
 def _drive_normalised(log, w, esc, p, band=(20, 80)):
@@ -767,11 +856,47 @@ def _notch_recommendation(log, w, t, fund, stats, spread, sec):
              "of hover, run `alog batchfft`, then set INS_LOG_BAT_MASK back to 0.")
 
 
+def _notch_series(log):
+    """[(notch, label, df with t/CF[/HF], esc_instance or None, message)] for every applied
+    notch centre in the log.
+
+    `FCNS` is the single-centre record: one series per notch instance, checked against the
+    fleet-mean fundamental. With INS_HNTCH_OPTS bit 1 (one notch per motor) ArduCopter writes
+    `FCN` instead - `I` the notch, `NF` the filter count (8 on Brisket: 4 motors x 2
+    harmonics, so not the number of centres), `CF1..CF6`/`HF1..HF6` one centre per ESC - and
+    no FCNS; each CFk is checked against its own ESC's RPM/60 (on brisket-t1.bin,
+    Brisket, CFk matches ESC k-1 to 0.15 % median). A slot that never holds a positive value
+    is unused (Brisket writes 0 in CF5/CF6, NaN while the motors are stopped) and is left
+    out; `check_notch` applies the same rule inside the window."""
+    out = []
+    fcns = log.instances("FCNS")
+    if fcns:
+        for i, g in sorted(fcns.items()):
+            if g is not None and not g.empty and "CF" in g.columns:
+                out.append((i, f"notch {i}", g, None, "FCNS"))
+        return out
+    d = log.df("FCN")
+    if d is None or d.empty or "t" not in d.columns:
+        return out
+    groups = [(int(i), g) for i, g in d.groupby("I")] if "I" in d.columns else [(0, d)]
+    for i, g in groups:
+        for k in range(1, 7):
+            cf = f"CF{k}"
+            v = g[cf].values.astype(float) if cf in g.columns else None
+            if v is None or not (np.isfinite(v) & (v > 0)).any():
+                continue
+            cols = {"t": g["t"].values, "CF": g[cf].values.astype(float)}
+            if f"HF{k}" in g.columns:
+                cols["HF"] = g[f"HF{k}"].values.astype(float)
+            out.append((i, f"notch {i} CF{k}", pd.DataFrame(cols), k - 1, "FCN"))
+    return out
+
+
 def check_notch(log, w):
     p = _Params(log)
     enable = p.p.get("INS_HNTCH_ENABLE")
     mode = p.get("INS_HNTCH_MODE")
-    fcns = log.instances("FCNS")
+    series = _notch_series(log)
     t, fund = esc_fundamental(log)
     sec = Section("Harmonic notch", key="notch")
     mode_name = _NOTCH_MODES.get(int(mode) if mode is not None else -1, '?')
@@ -784,13 +909,13 @@ def check_notch(log, w):
                        "no ESC telemetry, so there is no ground truth to check the notch against"
                        + (" (and INS_HNTCH_ENABLE=0: the notch is disabled anyway)" if enable == 0 else "")))
         return sec
-    if not fcns:
+    if not series:
         # Disabled and not-logged used to be the same SKIP. They call for opposite actions:
         # configure it, or fix the logging. And when it is disabled the check is holding
         # exactly the numbers that set FREQ and BW, so it says them (issue #9).
         stats, spread = _fundamental_envelope(log, w, t, fund, sec)
         if enable is None:
-            why = ("INS_HNTCH_ENABLE not in the log and FCNS not logged: cannot tell a disabled notch from "
+            why = ("INS_HNTCH_ENABLE not in the log and FCNS/FCN not logged: cannot tell a disabled notch from "
                    "an unlogged one; nothing to verify")
         elif int(enable) == 0:
             why = ("harmonic notch DISABLED (INS_HNTCH_ENABLE=0): nothing was applied, so there is nothing "
@@ -798,7 +923,7 @@ def check_notch(log, w):
             if stats:
                 _notch_recommendation(log, w, t, fund, stats, spread, sec)
         else:
-            why = (f"notch ENABLED (MODE={fmt(mode)} {mode_name}) but FCNS not logged: the applied centre "
+            why = (f"notch ENABLED (MODE={fmt(mode)} {mode_name}) but FCNS/FCN not logged: the applied centre "
                    "frequency was never written, so the notch cannot be verified - enable notch logging "
                    "(Copter LOG_BITMASK FTN bit) and fly again. FTN1.PkAvg is the FFT's opinion, not the "
                    "filter's setting")
@@ -807,27 +932,53 @@ def check_notch(log, w):
         return sec
 
     rows = []
-    for i, g in sorted(fcns.items()):
+    escs = log.instances("ESC")
+    per_notch = {}                      # notch -> [(label, p95 error, mistrack %, median ratio, truth)]
+    for i, label, g, esc_i, msg in series:
         gg = w.clip(g)
-        if gg is None or gg.empty or "CF" not in gg.columns:
+        if gg is None or gg.empty:
             continue
-        f_at = np.interp(gg["t"].values, t, fund)
-        ok = f_at > 1.0
-        ratio = gg["CF"].values[ok] / f_at[ok]
+        cfv = gg["CF"].values.astype(float)
+        if not (np.isfinite(cfv) & (cfv > 0)).any():
+            continue                                        # slot unused inside the window
+        truth = "fleet-mean fundamental"
+        e = w.clip(escs.get(esc_i)) if esc_i is not None and esc_i in escs else None
+        if e is not None and not e.empty and "RPM" in e.columns:
+            f_at = np.interp(gg["t"].values, e["t"].values, e["RPM"].values / 60.0)
+            truth = f"ESC{esc_i} RPM/60"
+        else:
+            f_at = np.interp(gg["t"].values, t, fund)
+        ok = (f_at > 1.0) & np.isfinite(cfv) & (cfv > 0)
+        if not ok.any():
+            continue
+        ratio = cfv[ok] / f_at[ok]
         s = describe(ratio)
-        mis = pct_above(ratio, 1.5)
-        rows.append([f"notch {i} CF / fundamental", s["mean"], s.get("p05"), s.get("p50"), s.get("p95")])
+        rows.append([f"{label} CF / {'fundamental' if msg == 'FCNS' else truth}",
+                     s["mean"], s.get("p05"), s.get("p50"), s.get("p95")])
         if "HF" in gg.columns and np.nanmedian(gg["HF"].values) > 0:
             hr = gg["HF"].values[ok] / f_at[ok]
             hs = describe(hr)
-            rows.append([f"notch {i} HF / fundamental", hs["mean"], hs.get("p05"), hs.get("p50"), hs.get("p95")])
-        sec.add(_grade(abs(s.get("p95", np.nan) - 1.0), "notch_track", name=f"notch {i} tracking",
-                       summary_fmt="p95 error {v} of the fundamental (warn {w}, fail {f})",
-                       median_ratio=s.get("p50")))
-        sec.add(_grade(mis, "notch_mistrack_pct", name=f"notch {i} harmonic lock-on",
-                       summary_fmt="{v}% of the window above 1.5x the fundamental (warn {w}, fail {f})"))
+            rows.append([f"{label} HF / {'fundamental' if msg == 'FCNS' else truth}",
+                         hs["mean"], hs.get("p05"), hs.get("p50"), hs.get("p95")])
+        per_notch.setdefault(i, []).append((label, abs(s.get("p95", np.nan) - 1.0), pct_above(ratio, 1.5),
+                                            s.get("p50"), truth, msg))
+    for i, items in sorted(per_notch.items()):
+        worst = max(items, key=lambda x: x[1] if np.isfinite(x[1]) else -1.0)
+        worst_mis = max(items, key=lambda x: x[2])
+        many = len(items) > 1
+        sfx = (f" - worst of {len(items)} per-motor centres ({worst[0].split()[-1]}, vs {worst[4]})"
+               if many else "")
+        sec.add(_grade(worst[1], "notch_track", name=f"notch {i} tracking",
+                       summary_fmt="p95 error {v} of the fundamental (warn {w}, fail {f})" + sfx,
+                       median_ratio=worst[3], source_msg=worst[5], n_centres=len(items)))
+        sec.add(_grade(worst_mis[2], "notch_mistrack_pct", name=f"notch {i} harmonic lock-on",
+                       summary_fmt="{v}% of the window above 1.5x the fundamental (warn {w}, fail {f})"
+                       + (f" - worst of {len(items)} per-motor centres" if many else "")))
     if rows:
         sec.table("tracking", ["series", "mean", "p05", "p50", "p95"], rows)
+        if any(x[5] == "FCN" for items in per_notch.values() for x in items):
+            sec.note("Per-motor notch (INS_HNTCH_OPTS bit 1): the centres are FCN.CF1..CFn, one per ESC, each "
+                     "checked against its own ESC's RPM/60. FCNS is not written in this mode.")
 
     freq_floor = p.get("INS_HNTCH_FREQ")
     if freq_floor and w.mask(t).any():
@@ -1703,6 +1854,10 @@ def check_imu(log, w):
 
 # -------------------------------------------------------------------- brownout
 
+#: Seconds at the end of the log whose median BAT.Volt is "the voltage at log end".
+END_VOLT_SECONDS = 5.0
+
+
 def check_brownout(log, w):
     """Did the log end in flight? (LogAnalyzer TestBrownout, plus the parser's own view.)"""
     sec = Section("Log end / brownout", key="brownout")
@@ -1738,14 +1893,43 @@ def check_brownout(log, w):
     if bat:
         g = bat[min(bat)]
         if "Volt" in g.columns and len(g) > 10:
+            # The median of the last END_VOLT_SECONDS, not the last sample: unplugging the pack
+            # drops the final record (22.02 V after a 26.0 V landing on brisket-t2.bin).
             v = g["Volt"].values
-            sec.add(Result("battery at log end", PASS if v[-1] > 0.9 * np.nanmax(v) else WARN,
-                           f"final voltage {v[-1]:.2f} V vs max {np.nanmax(v):.2f} V",
-                           evidence=dict(final_v=float(v[-1]), max_v=float(np.nanmax(v))), source="BAT.Volt"))
+            tv = g["t"].values
+            tail = v[tv >= tv[-1] - END_VOLT_SECONDS]
+            end_v = float(np.nanmedian(tail))
+            sec.add(Result("battery at log end", PASS if end_v > 0.9 * np.nanmax(v) else WARN,
+                           f"voltage at log end {end_v:.2f} V (median of the last {END_VOLT_SECONDS:g} s; final "
+                           f"sample {v[-1]:.2f} V) vs max {np.nanmax(v):.2f} V",
+                           evidence=dict(end_v=end_v, final_v=float(v[-1]), max_v=float(np.nanmax(v)),
+                                         tail_seconds=END_VOLT_SECONDS, tail_samples=int(tail.size)),
+                           source="BAT.Volt"))
     return sec
 
 
 # ---------------------------------------------------------------------- params
+
+#: Parameters the firmware itself rewrites while running. Their PARM re-emissions are
+#: bookkeeping, not a tune change, so `check_params` lists them but does not WARN on them.
+#: brisket-t1.bin (Brisket) re-emitted STAT_FLTTIME/RUNTIME/DISTFLWN every 31 s
+#: through the flight and MOT_THST_HOVER at disarm - 28 "in-flight changes", none a tune.
+FIRMWARE_MAINTAINED = (
+    (r"STAT_.*", "AP_Stats counters, saved every ~30 s"),
+    (r"MOT_THST_HOVER", "learned hover throttle (MOT_HOVER_LEARN 2), saved on disarm"),
+    (r"BARO\d*_GND_PRESS", "ground pressure, reset at arming"),
+    (r"INS_GYR\d*OFFS_[XYZ]|INS_GYROFFS_[XYZ]|INS_GYR\d*_CALTEMP", "gyro calibration at boot"),
+    (r"COMPASS_DEC", "declination, set from the GPS fix with COMPASS_AUTODEC"),
+)
+
+
+def firmware_maintained(name):
+    """The reason `name` is rewritten by the firmware itself, or None."""
+    for pat, why in FIRMWARE_MAINTAINED:
+        if re.fullmatch(pat, name):
+            return why
+    return None
+
 
 def check_params(log, w):
     """Parameter sanity: NaN values, in-flight changes, and copter-specific rules."""
@@ -1762,14 +1946,20 @@ def check_params(log, w):
                    evidence=dict(names=nan_names), source="LogAnalyzer TestParams"))
     changes = log.param_changes()
     if changes:
-        sec.table("changes", ["t (s)", "param", "old", "new"],
-                  [[round(t, 1), n, o, v] for t, n, o, v in changes], align=["r", "l", "r", "r"])
-        inflight = [c for c in changes if w.t0 <= c[0] <= w.t1]
+        sec.table("changes", ["t (s)", "param", "old", "new", "kind"],
+                  [[round(t, 1), n, o, v, "firmware" if firmware_maintained(n) else "set"]
+                   for t, n, o, v in changes], align=["r", "l", "r", "r", "l"])
+        tune = [c for c in changes if not firmware_maintained(c[1])]
+        inflight = [c for c in tune if w.t0 <= c[0] <= w.t1]
+        fw = len(changes) - len(tune)
         sec.add(Result("parameter changes", WARN if inflight else PASS,
-                       f"{len(changes)} parameter(s) rewritten after boot, {len(inflight)} inside the "
-                       "airborne window" + (" - the tune changed mid-flight (autotune or GCS)" if inflight else ""),
-                       evidence=dict(n=len(changes), n_inflight=len(inflight),
-                                     names=sorted({c[1] for c in changes})[:20]),
+                       f"{len(tune)} parameter(s) set after boot, {len(inflight)} inside the airborne window"
+                       + (" - the tune changed mid-flight (autotune or GCS)" if inflight else "")
+                       + (f"; plus {fw} rewrite(s) the firmware makes itself (STAT_* counters, learned hover "
+                          "throttle, calibrations), not counted" if fw else ""),
+                       evidence=dict(n=len(tune), n_inflight=len(inflight), n_firmware=fw,
+                                     names=sorted({c[1] for c in inflight or tune})[:20],
+                                     firmware_names=sorted({c[1] for c in changes if firmware_maintained(c[1])})[:20]),
                        source="PARM re-emission"))
     p = log.params()
     defaults = log.param_defaults()
@@ -2031,6 +2221,22 @@ def check_batch_fft(log, w, window="hann"):
     return sec
 
 
+def check_tune(log, w):
+    """Recommended PID gains from PIDx/RATE/ATUN with confidence
+
+    The single-log entry to `dflog.tune_fuse.analyse` (docs/pid-tuning-plan.md): tier A
+    (AutoTune reconstruction), tier B (identified plant + virtual AutoTune), tier C
+    (step response and oscillation ceiling) fused per parameter with a confidence built
+    from named components, and tier D (parameter consistency) which always runs. A log
+    whose PIDx/RATE stream is the standard 10 Hz is refused: the section then opens with
+    the ERROR block naming the LOG_BITMASK to set, as SKIP results (the contract), never
+    as a pass. `alog tune` runs the same analysis over several logs.
+    """
+    from . import tune_fuse
+    analysis = tune_fuse.analyse([log], [w])
+    return tune_fuse.to_section(analysis, whole_tool_refusal=tune_fuse.is_whole_tool_refusal(analysis))
+
+
 ALL_CHECKS = [
     ("summary", check_summary),
     ("integrity", check_integrity),
@@ -2045,6 +2251,7 @@ ALL_CHECKS = [
     ("notch", check_notch),
     ("pid", check_pids),
     ("gust", check_gust_response),
+    ("tune", check_tune),
     ("ekf", check_ekf),
     ("estimates", check_estimates),
     ("compass", check_compass),

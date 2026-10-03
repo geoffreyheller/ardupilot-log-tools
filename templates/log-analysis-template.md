@@ -39,6 +39,33 @@ between the flights.
 
 Short. Numbers, not adjectives — they are next flight's baseline.
 
+## 4. Tune (`alog tune <logs>`, window <t0>–<t1> s via `<method>`)
+
+> Delete this block when the section was refused. A refusal is one line here, verbatim:
+> `ERROR: these log files cannot be used for PID tuning.` + the code(s), and the parameters
+> to set (`LOG_BITMASK 180222 -> 180223`, …) go under "Recommended next steps" as the
+> tuning flight. Nothing below the ERROR block is a gain.
+
+| axis | param | current | recommended | change % | confidence | method | why |
+|---|---|---|---|---|---|---|---|
+| roll | `ATC_RAT_RLL_P` | | | | | `autotune-log` / `virtual-autotune` / `ceiling` / `step-rules` / `unchanged` | |
+
+Copy the rows from the `recommendations` table. Keep `withheld` where the tool printed
+it (confidence < 0.4; the value is in the JSON evidence only and is **not** applied).
+For each row you propose to apply, quote the confidence components
+(`prior × adequacy × excitation × consistency × agreement`) and the tier that produced
+it; a `step-rules` row is uncalibrated and never applied. Then the evidence behind it:
+the `step` row of the current gain set (frames, peak, overshoot/bounce ratio — direction
+only, not graded — `SRate` p95, ceiling), the `plant` fit and `margins` (gain margin dB,
+phase margin °, against 6 / 45), the `autotune` session agreement with `MSG` if tier A
+ran, the tier-D `params` lines that were WARN, and the `logs` table (which log fed which
+tier). State the defaults assumed.
+
+**Validation flight:** one axis, one gain set. Fly the tuning profile again (30 s hover,
+60 s sharp inputs on that axis), `alog tune before.bin after.bin`, and expect the ratios
+to move toward 1.0, margins to stay above 6 dB / 45°, `SRate` p95 < 5 and `Dmod` 1.000;
+`alog compare` for the rest.
+
 ---
 
 ## Recommended next steps

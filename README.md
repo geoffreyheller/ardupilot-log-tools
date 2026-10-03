@@ -15,7 +15,7 @@ python alog.py all  flight.bin --json # the same, one JSON document
 ```
 
 ```
-# Log analysis - 2026-09-04 12-17-29.bin
+# Log analysis - example-flight.bin
 
 **Log integrity:** 0 error(s), 1 warning(s), 1 info in log integrity.
 - [WARNING] TRUNCATED_TAIL: file ends 15 bytes into a RTC message (5 of 20 bytes present) ...
@@ -86,6 +86,8 @@ python alog.py hover     flight.bin                 # steady-hover chunks; --win
 python alog.py fft       flight.bin --plot fft.png  # local FFT (scipy) of the best gyro source
 python alog.py fft       flight.bin --list-sources  # every transformable signal with its Nyquist
 python alog.py compare   before.bin after.bin       # like-for-like, identical code both sides
+python alog.py tune      flight.bin [after.bin]     # PID gains with confidence, or the LOG_BITMASK to set (exit 3)
+python alog.py tune      flight.bin --prop-in 10    # plus the Mission Planner initial-parameter comparison
 python alog.py types     flight.bin                 # messages present, rates, fields
 python alog.py fields    flight.bin ESC             # one message's fields, units, MULT, ranges
 python alog.py dump      flight.bin RATE --fields t,RDes,R --every 10 > rate.csv
@@ -97,9 +99,9 @@ python plot_notch.py     flight.bin -o notch.png    # notch verification chart
 ```
 
 Checks (`alog all` runs them in this order): `summary`, `integrity`, `coverage`, `events`,
-`flight`, `paramcheck`, `brownout`, `vibe`, `imu`, `motors`, `notch`, `pid`, `gust`, `ekf`,
-`estimates`, `compass`, `power`, `gps`, `cpu`, `spectrum`, `batchfft`. Each is also a
-subcommand.
+`flight`, `paramcheck`, `brownout`, `vibe`, `imu`, `motors`, `notch`, `pid`, `gust`, `tune`,
+`ekf`, `estimates`, `compass`, `power`, `gps`, `cpu`, `spectrum`, `batchfft`. Each is also a
+subcommand; `tune` also takes several logs of one aircraft.
 
 Windows: `--window auto|ev|rpm|throttle|arm|hover|none`, `hover:N`, or an explicit
 `--window 120:180` (seconds since boot). `rpm` is the fleet-mean ESC fundamental above a
@@ -116,6 +118,25 @@ span across the ground time between two - and the method string says which. `--f
 picks one (default: the longest), `--flight all` runs the battery once per flight, and
 `alog info` lists them. A log with more than one flight analysed one flight at a time is
 a WARN, so it cannot pass unnoticed.
+
+Logging for PID tuning: `alog tune` recommends `ATC_RAT_*`, `ATC_ANG_*_P` and
+`ATC_ACC_*_MAX` per axis with a confidence built from named components, but only from a
+**fast-logged** flight. The standard `LOG_BITMASK` (180222) writes `PIDR/PIDP/PIDY`,
+`RATE` and `ATT` at 10 Hz, which cannot show a rate loop whose filters sit at 20-40 Hz,
+so the tool refuses such a log with an `ERROR:` block that names every parameter with its
+current and required value and exits 3 (a `SKIP` in `alog all`). Before the tuning flight
+set `LOG_BITMASK` bits 0 and 12 (180222 -> 180223), `LOG_FILE_RATEMAX 0`,
+`LOG_BLK_RATEMAX 0`, `INS_LOG_BAT_MASK 0`, `LOG_FILE_BUFSIZE >= 64`; `LOG_DISARMED` and
+`SCHED_LOOP_RATE` are reported as flown; flying AutoTune is not required — `AUTOTUNE_AGGR`
+and `AUTOTUNE_MIN_D` are only the aggressiveness and D floor the virtual AutoTune applies to
+an ordinary flight, and `AUTOTUNE_AXES` matters only if the log happens to hold a session;
+and for the optional
+plant-identification flight `SID_AXIS 10/11/12`, `SID_MAGNITUDE 0.15` (yaw 0.55),
+`SID_F_START_HZ 0.5`, `SID_F_STOP_HZ 40`, `SID_T_REC 70`, `SID_T_FADE_IN 15`,
+`SID_T_FADE_OUT 2` (the sweep must pass the rate-loop crossover: 4.5–5 Hz measured on a 10-inch quad, higher on smaller props).
+Fly 30 s hover, 60 s of sharp roll inputs, 60 s pitch, 30 s yaw, one gain set per
+flight; set bit 0 back afterwards on an onboard-flash board. The full recipe is
+`SKILLS.md` Skill 7.
 
 As a library:
 
@@ -145,6 +166,7 @@ r    = spectral.analyse(log, window=w)  # Welch PSD + peaks in motor orders, or 
 | motors | standing-trim decomposition through the SERVOn_FUNCTION channel map, the CG offset it implies (% of arm, mm with --arm-mm) and the same trim over level hover (static asymmetry vs translation artefact), RPM spread on medians with p05/p95, drive-normalised RPM (RPM per duty x volt: load vs drag), per-ESC temperature and spread, bidirectional DShot error rate, headroom against the MOT_SPIN_MAX ceiling, MOTB throttle limiting | measured, dronekit-la |
 | notch | `FCNS.CF` tracking against `ESC.RPM/60` (the notch as applied, not the FFT's opinion); when the notch is disabled, the measured fundamental envelope and a starting point for INS_HNTCH_*; enabled-but-unlogged is a different SKIP | measured |
 | pid, gust | desired-vs-actual rate correlation split at 5 Hz, `Dmod` slew-limiter engagement, PID output limiting, attitude error, unrequested excursions per second | dronekit-la, measured |
+| tune | recommended `ATC_RAT_x_P/I/D`, `ATC_ANG_x_P`, `ATC_ACC_x_MAX` per axis with a confidence from named components: AutoTune reconstruction from `ATUN` (tier A), joint-I/O plant identification gated by coherence plus AutoTune's own twitch search run on the identified plant with 6 dB / 45° margins and ceilings (tier B), PID-Analyzer step response and QuickTune `SRate` ceiling (tier C), parameter consistency (tier D); a 10 Hz log is refused with the `LOG_BITMASK` to set | AC_AutoTune_Multi.cpp, VTOL-quicktune.lua, PID-Analyzer, AnalyticTune, Bendat & Piersol |
 | ekf, estimates | XKF4 innovation ratios with the count over 1.0, solution-status flags, resets; ATT vs AHR2/XKF1 and baro vs EKF divergence | dronekit-la |
 | compass, power, gps, cpu | field magnitude/variation/health, motor interference, offset magnitudes; current-vs-throttle correlation, the current reading with every motor provably stopped (sensor zero offset), consumption and current at idle/hover/full throttle raw and offset-corrected, hover watts, board Vcc; sats, HDOP, fix availability, position jumps, glitch ERRs, the receiver's own HAcc/VAcc/SAcc accuracy estimates and fix rate from GPA; load, slow loops, free memory, internal errors | LogAnalyzer, dronekit-la, wiki, EKF3 GPS checks |
 | spectrum | local Welch PSD (scipy) of the fastest gyro source, peaks labelled in motor orders, honest about Nyquist and timing jitter | wiki FFT_SNR_REF |
@@ -207,6 +229,11 @@ dflog/
   analysis.py             the check battery (Sections with tables + notes)
   checks.py               Result contract + the cited threshold registry T
   spectral.py             scipy-based FFT: sources, Welch PSD, peaks, jitter/Nyquist honesty
+  tune.py                 PID tuning: data model, signal extraction, gates, LOGGING_REQUIREMENTS, refusals
+  tune_step.py / tune_atun.py / tune_ident.py
+                          tier C step response and ceilings; tier A ATUN reconstruction; tier B plant, margins, virtual AutoTune
+  tune_fuse.py            tier D, confidence, fusion, the tune Section
+  tunesim.py              AC_PID replica, plant and AutoTune twitch simulator (tier B engine and test oracle)
   stats.py / report.py    statistics and markdown helpers
   cli.py                  the agent-facing CLI (markdown + JSON, exit codes)
 reference/
@@ -225,6 +252,8 @@ tests/
   synthlog.py             a DataFlash writer for building malformed test logs
   test_parser_integrity.py, test_cli.py, test_flights.py, test_checks.py, test_largeprop.py
                           run anywhere, no flight data needed
+  tunesynth.py, test_tune_*.py
+                          synthetic fast-logged copter logs and the PID tuning tiers against them
   test_toolkit.py         pinned regression figures; needs LOG_DIR
 tools/bootstrap_pymavlink.py (and .sh)   vendor pymavlink when you want mavextra/mavfft_isb
 tools/make_fixture.py   cut a small, scrubbed test fixture out of a real log (tests/fixtures/)
@@ -255,6 +284,8 @@ python tests/test_checks.py                  # the checks, on synthetic logs
 python tests/test_largeprop.py               # pinned figures on the committed large-prop fixture
 python tests/test_toolkit.py                 # pinned regression figures (skips without LOG_DIR)
 LOG_DIR=/path/to/logs python tests/test_toolkit.py
+python tests/test_tune_extract.py            # PID tuning, one file per tier: extract, sim, step, atun, ident, fuse
+python tests/test_tune_docs.py               # the tuning docs agree with tune.LOGGING_REQUIREMENTS, REFUSAL_CODES and T
 ```
 
 The regression suite pins hand-verified numbers from two reference logs: attitude error sd

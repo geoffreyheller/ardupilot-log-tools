@@ -495,6 +495,167 @@ def test_json_flag_position_is_flexible():
     assert json.loads(out1)["command"] == json.loads(out2)["command"] == "types"
 
 
+# ------------------------------------------------------- alog tune (pid-tuning-plan WP7)
+
+_TUNE = {}
+
+
+def _tune_log(name, **kw):
+    """A synthetic fast-logged 5-inch quad flight (tests/tunesynth.py), built once."""
+    if name not in _TUNE:
+        from tunesynth import fast_log, PLANT_5IN, GAINS_5IN
+        kw.setdefault("axes", ("roll",))
+        _TUNE[name] = fast_log(PLANT_5IN, GAINS_5IN, **kw).write(os.path.join(TMP, name + ".bin"))
+    return _TUNE[name]
+
+
+def _fast1():
+    return _tune_log("fast1", seconds=60.0, seed=1)
+
+
+def _fast2():
+    return _tune_log("fast2", seconds=60.0, seed=2)
+
+
+def test_tune_refuses_a_10hz_log_with_the_error_block_first():
+    """The standard LOG_BITMASK logs PIDx at 10 Hz. The refusal is the first thing on
+    stdout, names the LOG_BITMASK to set with the log's own current value, and ends
+    with the exit line; the JSON is the error shape plus the structured refusals."""
+    slow = _tune_log("slow10", seconds=30.0, seed=3, pid_hz=10)
+    code, out, err = run("tune", slow)
+    assert code == 3 and err == ""
+    assert out.startswith("ERROR: these log files cannot be used for PID tuning.\n"), out[:200]
+    assert "PID_RATE_TOO_LOW" in out.splitlines()[1]
+    bitmask = [l for l in out.splitlines() if l.strip().startswith("LOG_BITMASK")]
+    assert bitmask and "180222 -> 180223" in bitmask[0], bitmask
+    assert out.rstrip().endswith("exit code 3")
+    code, doc = run_json("tune", slow)
+    assert code == 3 and doc["exit_code"] == 3 and doc["command"] == "tune"
+    assert doc["error"].startswith("ERROR: these log files cannot be used for PID tuning.")
+    assert doc["refusals"][0]["code"] == "PID_RATE_TOO_LOW"
+    assert "180223" in doc["refusals"][0]["fix"] and doc["refusals"][0]["log_name"] == "slow10.bin"
+    assert len(doc["logging_requirements"]) == 1 and doc["logging_requirements"][0]
+    bm = [r for r in doc["logging_requirements"][0] if r["param"] == "LOG_BITMASK"][0]
+    assert bm["current"] == 180222 and bm["required"] == "180223" and bm["ok"] is False
+    assert len(doc["logs"]) == 1 and doc["logs"][0]["file_name"] == "slow10.bin"
+    assert doc["logs"][0]["integrity"]["ok"] is True and doc["identity"]["ok"] is True
+    assert "sections" not in doc
+
+
+def test_tune_fuses_two_logs_of_one_aircraft_into_one_section():
+    code, doc = run_json("tune", _fast1(), _fast2())
+    assert code in (0, 1, 2) and doc["exit_code"] == code
+    assert doc["command"] == "tune" and "log" not in doc
+    assert [s["key"] for s in doc["sections"]] == ["tune"]
+    assert [l["file_name"] for l in doc["logs"]] == ["fast1.bin", "fast2.bin"]
+    for l in doc["logs"]:
+        assert l["integrity"]["ok"] is True and l["window"]["method"] and l["contributed"]
+        assert "requirements" in l and "frame_type" in l
+    assert doc["identity"] == dict(ok=True, reasons=[])
+    assert {"counts", "findings"} <= set(doc["verdict"])
+    sec = doc["sections"][0]
+    assert "recommendations" in {t["name"] for t in sec["tables"]}
+    assert any(r["name"] == "roll ATC_RAT_RLL_P" for r in sec["results"])
+    md_code, md, err = run("tune", _fast1(), _fast2())
+    assert md_code == code and err == ""
+    assert md.startswith("# alog tune\n")
+    assert md.count("**Log integrity:**") == 2 and md.count("Window: ") == 2
+    assert "**fast1.bin**" in md and "**fast2.bin**" in md and "## Verdict" in md
+    assert not md.startswith("ERROR")
+
+
+def test_tune_refuses_logs_of_different_aircraft():
+    other = _tune_log("other_frame", seconds=30.0, seed=4, params_extra=dict(FRAME_TYPE=3.0))
+    code, doc = run_json("tune", _fast1(), other)
+    assert code == 3 and doc["exit_code"] == 3
+    assert doc["refusals"][0]["code"] == "DIFFERENT_AIRCRAFT"
+    assert doc["identity"]["ok"] is False and "FRAME_TYPE 1 vs 3" in doc["identity"]["reasons"][0]
+    assert [l["file_name"] for l in doc["logs"]] == ["fast1.bin", "other_frame.bin"]
+    assert len(doc["logging_requirements"]) == 2
+    code, out, err = run("tune", _fast1(), other)
+    assert code == 3 and out.startswith("ERROR: these log files cannot be used for PID tuning.")
+    assert "DIFFERENT_AIRCRAFT" in out.splitlines()[1] and "-- other_frame.bin" in out
+
+
+def test_tune_rejects_flight_all_and_bad_flags_with_exit_3():
+    code, out, err = run("tune", _fast1(), "--flight", "all")
+    assert code == 3 and "--flight all" in err and "tune" in err
+    code, doc = run_json("tune", _fast1(), "--flight", "all")
+    assert code == 3 and doc["exit_code"] == 3 and "--flight all" in doc["error"]
+    code, out, err = run("tune", _fast1(), "--axes", "roll,foo")
+    assert code == 3 and "foo" in err and "roll, pitch, yaw" in err
+    code, out, err = run("tune", _fast1(), "--axes", "")
+    assert code == 3
+    code, out, err = run("tune", _fast1(), "--aggr", "0.5")
+    assert code == 3 and "--aggr" in err
+    code, out, err = run("tune", _fast1(), "--prop-in", "0")
+    assert code == 3 and "--prop-in" in err
+    code, out, err = run("tune", os.path.join(TMP, "nope.bin"))
+    assert code == 3 and "no such file" in err
+
+
+def test_tune_markdown_and_json_carry_the_same_numbers():
+    code, doc = run_json("tune", _fast1(), _fast2())
+    tbl = {t["name"]: t for t in doc["sections"][0]["tables"]}["recommendations"]
+    cols = tbl["columns"]
+    row = [r for r in tbl["rows"] if r[cols.index("param")] == "ATC_RAT_RLL_P"][0]
+    _c, md, _e = run("tune", _fast1(), _fast2())
+    line = [l for l in md.splitlines() if l.startswith("| roll") and "| ATC_RAT_RLL_P " in l][0]
+    cells = [c.strip() for c in line.strip("|").split("|")]
+    for name in ("current", "recommended", "change %", "confidence", "method"):
+        assert str(row[cols.index(name)]) in cells, (name, row[cols.index(name)], cells)
+    res = [r for r in doc["sections"][0]["results"] if r["name"] == "roll ATC_RAT_RLL_P"][0]
+    assert res["summary"] in md
+    assert str(row[cols.index("recommended")]) in res["summary"]
+
+
+def test_tune_output_is_byte_identical_across_runs():
+    a = run("tune", _fast1(), _fast2())
+    b = run("tune", _fast1(), _fast2())
+    assert a == b
+    a = run("--json", "tune", _fast1(), _fast2())
+    b = run("--json", "tune", _fast1(), _fast2())
+    assert a == b
+
+
+def test_schema_lists_the_tune_thresholds_and_constants_with_sources():
+    code, doc = run_json("schema")
+    tune_th = {k: v for k, v in doc["thresholds"].items() if k.startswith("tune_")}
+    assert {"tune_pid_rate_hz", "tune_confidence", "tune_gain_margin_db"} <= set(tune_th)
+    assert all(v["source"] for v in tune_th.values())
+    assert doc["tune_constants"]
+    assert all(v.get("source") for v in doc["tune_constants"].values()), \
+        [k for k, v in doc["tune_constants"].items() if not v.get("source")]
+    assert {"autotune_pi_ratio_final", "quik_gain_margin", "fuse_prior_autotune_log"} <= set(doc["tune_constants"])
+    assert "tune" in doc and "refusals" in doc["tune"]
+
+
+def test_tune_axes_restricts_the_section():
+    code, doc = run_json("tune", _fast1(), _fast2(), "--axes", "roll")
+    sec = doc["sections"][0]
+    tbl = {t["name"]: t for t in sec["tables"]}["recommendations"]
+    assert tbl["rows"] and all(r[0] == "roll" for r in tbl["rows"])
+    names = [r["name"] for r in sec["results"]]
+    assert not any(n.startswith("pitch ") or n.startswith("yaw ") for n in names), names
+    assert "roll ATC_RAT_RLL_P" in names and "ATC_RATE_FF_ENAB" in names
+    _c, md, _e = run("tune", _fast1(), _fast2(), "--axes", "roll")
+    assert "Axes: roll." in md
+
+
+def test_tune_on_one_flight_of_several_is_a_warn():
+    """RULES section 1: analysing one flight of several is a WARN whatever the flags.
+    `tune` has no `flight` check to say so, so the CLI adds the result itself."""
+    from dflog import Log, airborne_window
+    from dflog.cli import _tune_flights_result
+    log = Log(TWO_FLIGHTS, use_cache=False)
+    r = _tune_flights_result(log, airborne_window(log))
+    assert r is not None and r.status == "WARN" and r.name == "two_flights.bin flights in log"
+    assert "2 flights" in r.summary and "flight 1 of 2" in r.summary and "--flight N" in r.summary
+    assert r.evidence["n_flights"] == 2 and r.evidence["flight_index"] == 1
+    log = Log(GOOD, use_cache=False)
+    assert _tune_flights_result(log, airborne_window(log)) is None
+
+
 if __name__ == "__main__":
     import _shim
     sys.exit(_shim.run(sys.modules[__name__]))

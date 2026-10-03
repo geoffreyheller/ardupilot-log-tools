@@ -9,8 +9,9 @@ Read, in this order:
 2. **`CLAUDE.md`** — the operating guide: which command to run first, how to pick the
    window, what to check every time, the pitfalls that have already produced wrong answers.
 3. **`SKILLS.md`** — recipes: one per question (motor balance, notch, GPS, current sensor,
-   before/after…) with the commands, the lines to read, the decision and the validation
-   flight. Start here when you already know what you are asking.
+   PID gains, before/after…) with the commands, the lines to read, the decision and the
+   validation flight. Start here when you already know what you are asking. Skill 7 is
+   the one to read before asking for gains: it names the `LOG_BITMASK` a tuning log needs.
 4. **`reference/`** as needed — `integrity-codes.md` when a report shows a diagnostic,
    `json-output.md` for the `--json` shape, `thresholds.md` for where a number came from.
 

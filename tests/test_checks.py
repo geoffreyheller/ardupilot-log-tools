@@ -49,10 +49,12 @@ def _writer():
     w.fmt(203, "RCOU", "QHHHH", "TimeUS,C1,C2,C3,C4")
     w.fmt(204, "BAT", "QBfff", "TimeUS,Inst,Volt,Curr,CurrTot")
     w.fmt(205, "CTUN", "Qfff", "TimeUS,ThO,ThH,BAlt")
-    w.fmt(206, "ATT", "Qffff", "TimeUS,DesRoll,Roll,DesPitch,Pitch")
+    w.fmt(206, "ATT", "Qfffff", "TimeUS,DesRoll,Roll,DesPitch,Pitch,Yaw")
     w.fmt(207, "MODE", "QBBB", "TimeUS,ModeNum,Rsn,ThrCrs")
     w.fmt(208, "RCIN", "QHHHH", "TimeUS,C1,C2,C3,C4")
     w.fmt(209, "IMU", "QBfff", "TimeUS,I,GyrX,GyrY,GyrZ")
+    w.fmt(210, "FCN", "QBB" + "f" * 12, "TimeUS,I,NF," + ",".join(f"CF{k}" for k in range(1, 7)) + ","
+          + ",".join(f"HF{k}" for k in range(1, 7)))
     w.msg("MSG", TimeUS=20, Message="ArduCopter V4.7.1 (deadbeef)")
     w.msg("PARM", TimeUS=30, Name="FRAME_CLASS", Value=1.0, Default=1.0)
     w.msg("PARM", TimeUS=31, Name="FRAME_TYPE", Value=1.0, Default=1.0)
@@ -76,7 +78,8 @@ PACK_V = 25.0
 
 def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temps=(35.0, 36.0, 35.0, 36.0),
                stopped_current=0.0, hover_pwm=1400, idle_pwm=1100, full=(80.0, 90.0), att=None,
-               modes=(), hover_thh=0.40, extra_params=None, trim_fn=None, imu_hz=None):
+               modes=(), hover_thh=0.40, extra_params=None, trim_fn=None, imu_hz=None, fcn=None,
+               end_drop_v=None):
     """Ground (0-5 s motors stopped, 5-10 s armed idle), flight 10-110 s at hover_pwm with a
     full-throttle burst over `full`, landing, then motors stopped again 110-120 s.
 
@@ -86,6 +89,8 @@ def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temp
     `att` is a callable t -> (roll, pitch) degrees; `modes` [(t, mode_num)]; `trim_fn`
     t -> pwm trims overrides `pwm_trim` (a trim that only exists while translating);
     `imu_hz` adds a gyro stream at that rate so the coverage/Nyquist logic has a source.
+    `fcn` = {esc_instance: centre / RPM-over-60 factor} writes a per-motor notch (FCN, no
+    FCNS) as ArduCopter does with INS_HNTCH_OPTS bit 1: CFk follows ESC k-1, NaN while stopped.
     """
     w = _writer()
     _params(w, SERVO1_MIN=1000, SERVO1_MAX=2000, MOT_SPIN_MIN=0.15, MOT_SPIN_MAX=0.95, MOT_SPIN_ARM=0.10,
@@ -120,10 +125,21 @@ def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temp
         w.msg("BAT", TimeUS=us, Inst=0, Volt=v, Curr=curr, CurrTot=tot_mah)
         w.msg("CTUN", TimeUS=us, ThO=tho, ThH=hover_thh, BAlt=0.0 if (stopped or idle) else 5.0)
         if att is not None:
-            r, p = att(t)
-            w.msg("ATT", TimeUS=us, DesRoll=r, Roll=r, DesPitch=p, Pitch=p)
+            a = att(t)
+            r, p, yw = (a[0], a[1], a[2] if len(a) > 2 else 0.0)
+            w.msg("ATT", TimeUS=us, DesRoll=r, Roll=r, DesPitch=p, Pitch=p, Yaw=yw)
         if modes:
             w.msg("RCIN", TimeUS=us, C1=1500, C2=1500, C3=1500, C4=1500)
+        if fcn is not None:
+            cf = {k: (float("nan") if k <= 4 else 0.0) for k in range(1, 7)}    # Brisket: unused slots read 0
+            for m in range(1, 5):
+                inst = CHAN_OF_MOTOR[m] - 1
+                if not stopped:
+                    cf[inst + 1] = rpm[m] / 60.0 * fcn.get(inst, 1.0)
+            w.msg("FCN", TimeUS=us, I=0, NF=8, **{f"CF{k}": cf[k] for k in cf},
+                  **{f"HF{k}": (2 * cf[k] if k <= 4 else float("nan")) for k in cf})
+    if end_drop_v is not None:
+        w.msg("BAT", TimeUS=int(SPAN * 1e6), Inst=0, Volt=end_drop_v, Curr=0.0, CurrTot=tot_mah)
     return _load(w, name)
 
 
@@ -442,7 +458,8 @@ def test_trim_is_cross_checked_against_level_hover():
     assert r.evidence["window"]["pitch"] == pytest.approx(60.0, abs=1.0)
     assert r.evidence["hover"]["pitch"] == pytest.approx(60.0, abs=1.0)
     assert r.evidence["value"] < 2.0
-    assert "static" in r.summary.lower()
+    # equal in level hover is a CG/airframe asymmetry OR a steady breeze, not proof of CG
+    assert "cg/airframe asymmetry or a steady breeze" in r.summary.lower() and "trim vs heading" in r.summary
     t = _table(sec, "trim_hover")
     assert [row[0] for row in t["rows"]] == ["roll", "pitch", "yaw"]
     # the same trim only while pitched forward: gone in level hover
@@ -488,6 +505,109 @@ def test_notch_disabled_is_distinguished_from_not_logged():
     unknown = _motor_log("notch_unknown.bin", imu_hz=25.0)
     rs = _results(check_notch(unknown, airborne_window(unknown, method="ev")))
     assert "INS_HNTCH_ENABLE" in rs["notch"].summary and "not in the log" in rs["notch"].summary
+
+
+def _heading_trims(cg_pitch, cg_roll, wind_us, wind_bearing):
+    """t -> per-motor trims (M1 FR, M2 RL, M3 FL, M4 RR) for a CG trim fixed to the airframe
+    plus a breeze load fixed to the earth (heavier on the side facing `wind_bearing`), while
+    the aircraft yaws through N, E, S, W in 25 s steps (`_yaw_steps`)."""
+    def fn(t):
+        psi = np.radians(_yaw_steps(t))
+        wn, we = wind_us * np.cos(np.radians(wind_bearing)), wind_us * np.sin(np.radians(wind_bearing))
+        dx = cg_pitch + wn * np.cos(psi) + we * np.sin(psi)          # front heavier
+        dy = -cg_roll - wn * np.sin(psi) + we * np.cos(psi)          # right heavier
+        pitch, roll = dx, -dy
+        return tuple(pitch / 2 * f + roll / 2 * l for f, l in ((1, -1), (-1, 1), (1, 1), (-1, -1)))
+    return fn
+
+
+def _yaw_steps(t):
+    return 0.0 if t < 35 else 90.0 if t < 60 else 180.0 if t < 85 else 270.0
+
+
+def test_trim_vs_heading_separates_cg_from_a_breeze():
+    """2026-09-30 Brisket, battery untouched: pitch/roll trim 20.6/12.7 us facing 178 deg,
+    35.2/0.2 us facing 159 deg four hours later in a light breeze - and 'trim vs level hover'
+    called both a static asymmetry. Only the heading dependence separates the two."""
+    from dflog.analysis import check_motors
+    log = _motor_log("trim_heading.bin", modes=((5.0, 2),), trim_fn=_heading_trims(20.0, -6.0, 15.0, 90.0),
+                     att=lambda t: (0.0, 0.0, _yaw_steps(t)))
+    sec = check_motors(log, airborne_window(log, method="ev"))
+    r = _results(sec)["trim vs heading"]
+    assert r.status == "WARN", r.summary                              # 20 us airframe trim: warn 10
+    assert r.evidence["airframe"]["pitch"] == pytest.approx(20.0, abs=0.5)
+    assert r.evidence["airframe"]["roll"] == pytest.approx(-6.0, abs=0.5)
+    assert r.evidence["earth"]["magnitude"] == pytest.approx(15.0, abs=0.5)
+    assert r.evidence["earth"]["bearing_deg"] == pytest.approx(90.0, abs=2.0)
+    assert r.evidence["bins"] == 4 and r.evidence["residual_us"] < 0.5
+    assert "heavier on the side facing 90 deg" in r.summary
+    assert len(_table(sec, "trim_heading")["rows"]) == 4
+    # 'trim vs level hover' no longer calls it static
+    lv = _results(sec)["trim vs level hover"]
+    assert "static asymmetry" not in lv.summary
+    # one heading: cannot separate, says so, and does not pretend
+    one = _motor_log("trim_heading_one.bin", modes=((5.0, 2),), pwm_trim=FRONT_PLUS_60, att=lambda t: (0.0, 0.0, 170.0))
+    r = _results(check_motors(one, airborne_window(one, method="ev")))["trim vs heading"]
+    assert r.status == "SKIP" and "cannot be told apart" in r.summary and "four headings" in r.summary, r.summary
+
+
+def test_battery_at_log_end_ignores_the_power_off_sample():
+    """Unplugging the pack drops the last BAT record: 22.02 V after a 26.0 V landing on
+    brisket-t2.bin read as a WARN."""
+    from dflog.analysis import check_brownout
+    log = _motor_log("bat_end.bin", end_drop_v=0.7 * PACK_V)
+    r = _results(check_brownout(log, airborne_window(log, method="ev")))["battery at log end"]
+    assert r.status == "PASS", r.summary
+    assert r.evidence["final_v"] == pytest.approx(0.7 * PACK_V, abs=0.01)
+    assert r.evidence["end_v"] == pytest.approx(PACK_V - 0.002 * SPAN, abs=0.05)
+    assert "median of the last 5 s" in r.summary
+
+
+def test_per_motor_notch_is_read_from_fcn_against_each_esc():
+    """INS_HNTCH_OPTS bit 1 logs FCN.CF1..CFn and no FCNS. The check used to SKIP a working
+    notch as 'not logged' (brisket-t1.bin, Brisket: CFk matched ESC k-1 to 0.15 %)."""
+    notch = dict(INS_HNTCH_ENABLE=1, INS_HNTCH_MODE=3, INS_HNTCH_FREQ=40, INS_HNTCH_BW=20, INS_HNTCH_OPTS=2)
+    log = _motor_log("notch_fcn.bin", imu_hz=25.0, extra_params=notch, pwm_trim=FRONT_PLUS_60, fcn={})
+    sec = check_notch(log, airborne_window(log, method="ev"))
+    rs = _results(sec)
+    assert "notch" not in rs, rs["notch"].summary                     # not a SKIP any more
+    tr = rs["notch 0 tracking"]
+    assert tr.status == "PASS" and tr.evidence["n_centres"] == 4 and tr.evidence["source_msg"] == "FCN", tr.summary
+    assert "worst of 4 per-motor centres" in tr.summary and rs["notch 0 harmonic lock-on"].status == "PASS"
+    rows = {r[0]: r for r in _table(sec, "tracking")["rows"]}
+    assert "notch 0 CF1 CF / ESC0 RPM/60" in rows and rows["notch 0 CF1 CF / ESC0 RPM/60"][3] == pytest.approx(1.0, abs=1e-6)
+    assert "FCNS is not written in this mode" in _notes(sec)
+    # each centre is judged against its own ESC: one motor's notch 30 % high fails on its own
+    bad = _motor_log("notch_fcn_bad.bin", imu_hz=25.0, extra_params=notch, pwm_trim=FRONT_PLUS_60, fcn={2: 1.3})
+    tr = _results(check_notch(bad, airborne_window(bad, method="ev")))["notch 0 tracking"]
+    assert tr.status == "FAIL" and "CF3" in tr.summary and "ESC2" in tr.summary, tr.summary
+
+
+def test_firmware_rewrites_are_not_an_in_flight_tune_change():
+    """AP_Stats re-saves STAT_* every ~30 s and MOT_THST_HOVER is saved on disarm: 28
+    'in-flight changes' on brisket-t1.bin, none of them a tune."""
+    from dflog.analysis import check_params, firmware_maintained
+    w = _writer()
+    _params(w, STAT_RUNTIME=100, STAT_FLTTIME=10, MOT_THST_HOVER=0.24, ATC_RAT_RLL_P=0.135, BARO1_GND_PRESS=88000)
+    for t in (40.0, 71.0, 102.0):
+        w.msg("PARM", TimeUS=int(t * 1e6), Name="STAT_RUNTIME", Value=100 + t, Default=float("nan"))
+        w.msg("PARM", TimeUS=int(t * 1e6), Name="STAT_FLTTIME", Value=10 + t, Default=float("nan"))
+    w.msg("PARM", TimeUS=int(FLIGHT[1] * 1e6) - 1000, Name="MOT_THST_HOVER", Value=0.25, Default=float("nan"))
+    log = _load(w, "stat_rewrites.bin")
+    r = _results(check_params(log, airborne_window(log, method="ev")))["parameter changes"]
+    assert r.status == "PASS" and r.evidence["n_inflight"] == 0 and r.evidence["n_firmware"] == 7, r.summary
+    assert "7 rewrite(s) the firmware makes itself" in r.summary
+    kinds = {row[1]: row[4] for row in _table(check_params(log, airborne_window(log, method="ev")), "changes")["rows"]}
+    assert kinds == {"STAT_RUNTIME": "firmware", "STAT_FLTTIME": "firmware", "MOT_THST_HOVER": "firmware"}
+    # a real gain change in flight still warns, and is named
+    w.msg("PARM", TimeUS=int(60.0 * 1e6), Name="ATC_RAT_RLL_P", Value=0.15, Default=float("nan"))
+    log = _load(w, "stat_rewrites_tune.bin")
+    r = _results(check_params(log, airborne_window(log, method="ev")))["parameter changes"]
+    assert r.status == "WARN" and r.evidence["n_inflight"] == 1 and r.evidence["names"] == ["ATC_RAT_RLL_P"], r.summary
+    for n in ("STAT_DISTFLWN", "BARO1_GND_PRESS", "INS_GYR2OFFS_X", "INS_GYROFFS_Z", "INS_GYR1_CALTEMP", "COMPASS_DEC"):
+        assert firmware_maintained(n), n
+    for n in ("ATC_RAT_RLL_P", "INS_HNTCH_FREQ", "MOT_SPIN_MIN", "COMPASS_OFS_X"):
+        assert firmware_maintained(n) is None, n
 
 
 def test_notch_recommendation_when_disabled():
