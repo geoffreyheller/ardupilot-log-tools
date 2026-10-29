@@ -155,3 +155,67 @@ Adapted from the Karpathy-inspired guidelines (https://github.com/forrestchang/a
 - [ ] Confirm the JSON snapshot on the committed fixture matches Phase 0, or that every difference is explained in a PR.
 - [ ] Update `README.md` with a short "Development" section: install with `pip install -e ".[test]"`, the single test command, and the lint/type commands.
 - [ ] Close or update this TODO.
+
+---
+
+# TODO: Package as an installable, agent-neutral skill
+
+Make the analysis usable by any coding agent without cloning the repo: one skill folder in
+the open SKILL.md format (https://agentskills.io) that installs and runs `alog`, plus the
+guidance from `RULES.md`, `CLAUDE.md` and `SKILLS.md`. Nothing here has been started.
+Third-party marketplaces were considered and declined for now (Agensi, 2026-10-28); listing
+anywhere is optional once the skill installs from this repo.
+
+## Ground rules
+
+- **No agent-specific content in the skill itself.** `SKILL.md` uses only the standard
+  frontmatter (`name`, `description`, optionally `license`, `compatibility`, `metadata`).
+  No vendor-only fields, tool names, slash commands or agent product names in the body.
+  Commands are plain shell.
+- **Per-agent wiring lives outside the skill folder** (a plugin/marketplace manifest, an
+  install path in the README), so adding or dropping an agent never edits the skill.
+- **One source of truth.** The repo docs stay canonical; the skill's reference files are
+  generated from them or checked against them, never hand-maintained copies.
+- **Free and MIT**, same as the repo.
+
+## Phase S1: Make `alog` runnable without a clone
+
+- [ ] Confirm `uvx --from git+https://github.com/geoffreyheller/ardupilot-log-tools alog info <log>` works on Windows, Linux and macOS, Python 3.9 and 3.12.
+- [ ] Document the `pipx install git+…` and plain `pip install git+…` equivalents for machines without `uv`.
+- [ ] Decide whether to publish to PyPI (shorter command, pinned versions) or stay GitHub-only. Check the `ardupilot-log-tools` name is free first.
+- [ ] Make sure every path the docs give (`python alog.py …`) has an installed-command equivalent (`alog …`), and that no command depends on the working directory being the repo.
+
+**Done when:** a clean machine with only `uv` (or only `pipx`) can run `alog all <log> --json` from any directory.
+
+## Phase S2: Write the skill folder
+
+- [ ] Create `skills/ardupilot-log-analysis/` with:
+  - [ ] `SKILL.md`: a `description` that triggers on ArduPilot / ArduCopter dataflash `.bin` logs, vibration, harmonic notch, motor balance, CG/trim, GPS, current sensor and PID tuning. The body covers the install/run command, "run `info` first", the ground rules (`CLAUDE.md` §2), the window choice (§3) and an index of the reference files. Keep it short; agents load the rest on demand.
+  - [ ] `references/`: `RULES.md`, the recipes from `SKILLS.md`, `pitfalls.md`, `integrity-codes.md`, `json-output.md`, `thresholds.md`, and the report template.
+- [ ] Leave out repo-development material: `CLAUDE.md` §12 "Extending", test commands, this TODO.
+- [ ] Pin the tool version the skill expects (a git tag or PyPI version) and have the skill check `alog --version`, or add that flag if it does not exist.
+- [ ] Validate the folder against the spec (`skills-ref validate`, from the agentskills reference library).
+
+**Done when:** the folder validates and contains no agent-specific wording.
+
+## Phase S3: Keep the skill and the docs in step
+
+- [ ] Add a script (e.g. `tools/build_skill.py`) that regenerates `references/` from the canonical files, or a test that fails when they differ.
+- [ ] Extend `tests/test_tune_docs.py` (or a new `tests/test_skill_docs.py`) so command names, flags and exit codes quoted in `SKILL.md` match the CLI.
+- [ ] Run it in CI.
+
+**Done when:** changing a canonical doc without regenerating the skill fails CI.
+
+## Phase S4: Installation per agent
+
+- [ ] README "Use as an agent skill" section: copy or symlink `skills/ardupilot-log-analysis/` into the agent's skills directory, with a table of directories for the agents that support SKILL.md (verify each one at the time of writing; they change).
+- [ ] Optional thin adapters, each in its own file outside the skill folder and none required by the others: a Claude Code plugin/marketplace manifest, and the equivalent for any other agent that has an install-from-repo mechanism.
+- [ ] Test on at least three different agents, each against the committed fixture (`tests/fixtures/largeprop-quad.bin`): the skill triggers on a natural question ("check the notch on this log"), runs `info` first and quotes the window and method.
+
+**Done when:** three agents from different vendors install the skill from this repo and produce a correct `info` + `all` analysis of the fixture.
+
+## Phase S5: Release
+
+- [ ] Tag a release; the skill's pinned version points at it.
+- [ ] Add a CHANGELOG entry and the README section.
+- [ ] Optional: list in public skill directories. Free listings only, no exclusivity.
