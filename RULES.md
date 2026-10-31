@@ -75,14 +75,12 @@ not break.
 
 ## 5. Changing the tools.
 
-- Run all six test files before and after: `tests/test_toolkit.py` (pinned regression
-  figures on the reference logs, skipped when `LOG_DIR` is unset),
-  `tests/test_parser_integrity.py` (synthetic malformed logs, every integrity code),
-  `tests/test_cli.py` (exit codes and JSON contract), `tests/test_flights.py`
-  (flight segmentation and window selection), `tests/test_checks.py` (the checks on
-  synthetic logs) and `tests/test_largeprop.py` (pinned figures on the committed,
-  scrubbed large-prop fixture). A change that makes a pinned figure move is wrong until
-  proven otherwise.
+- Run every test file before and after: `python tests/run_all.py`. It finds each
+  `tests/test_*.py` by glob and runs it in its own process, and `tools/ci_local.py` (the
+  pre-merge check) runs exactly the same command, so a new test file needs no registration anywhere. The pinned regression figures
+  on the reference logs (`tests/test_toolkit.py`) skip when `LOG_DIR` is unset; the
+  committed, scrubbed large-prop fixture (`tests/test_largeprop.py`) and the synthetic logs
+  run everywhere. A change that makes a pinned figure move is wrong until proven otherwise.
 - A fixture cut from a real log goes through `tools/make_fixture.py`, which relocates
   every position, zeroes the MCU serial and drops every MSG text not on its allow-list.
   Review the MSG list it prints before committing.
@@ -92,7 +90,8 @@ not break.
   `ALL_CHECKS`, using `Section.table()` / `Section.note()` so JSON and markdown stay
   identical, and it must return `SKIP` results for missing inputs.
 - Platform-agnostic: no shebang-only invocations in docs, no shell-specific scripts as the
-  only path, forward-slash-agnostic paths, UTF-8 output. CI runs Windows, Linux and macOS.
+  only path, forward-slash-agnostic paths, UTF-8 output. There is no cloud CI: `python tools/ci_local.py`
+  runs the suite under Python 3.9 and 3.12 on the machine it runs on, and covers that OS only.
 - The parser applies format-character scaling (`c C e E L`) and never `MULT`. Changing that
   convention is not a bug fix; it is a different tool.
 - Decodings you had to work out go in `reference/`, so nobody derives them twice.

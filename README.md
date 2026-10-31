@@ -56,7 +56,7 @@ Exit code 0 / 1 / 2 is pass / warn / fail; 3 means the input could not be analys
    output; errors that say what *does* exist. `RULES.md` is the short contract; `CLAUDE.md`
    the operating guide.
 4. **Platform agnostic.** Pure Python 3.9+ on Windows, Linux and macOS; no shell scripts on
-   the critical path; UTF-8 output; CI runs all three.
+   the critical path; UTF-8 output. The test suite runs locally (`tools/ci_local.py`); there is no cloud CI.
 
 ---
 
@@ -277,6 +277,14 @@ JsDataflashParser behave on the same inputs.
 ## Tests
 
 ```bash
+python tests/run_all.py                      # every tests/test_*.py; exit 1 if any failed
+python tests/run_all.py cli flights          # only the files named
+python tools/ci_local.py                     # the pre-merge check: the suite under Python 3.9 and 3.12 (needs uv)
+```
+
+One file at a time:
+
+```bash
 python tests/test_parser_integrity.py        # synthetic malformed logs: every integrity code
 python tests/test_cli.py                     # exit codes and the JSON contract
 python tests/test_flights.py                 # flight segmentation and window selection
@@ -314,7 +322,7 @@ until proven otherwise. pytest is optional; `tests/_shim.py` runs the suites sta
 Read `RULES.md` §5. New checks go in `dflog/analysis.py` as `check_*(log, window) ->
 Section`, registered in `ALL_CHECKS`; new thresholds in `dflog/checks.py::T` with a source;
 new integrity conditions get a code, a test and a line in `reference/integrity-codes.md`.
-Run all three test files before opening a PR.
+Run `python tests/run_all.py` before opening a PR.
 
 ## Licence
 
