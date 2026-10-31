@@ -157,7 +157,7 @@ def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temp
 
 
 def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=(0.0, 0.0),
-             ekf=(0.0, 0.0), ekf1=None, pi=None, params=None, ubx2=None, nofix=(), curr=None, tho=None):
+             ekf=(0.0, 0.0), ekf1=None, pi=None, params=None, ubx2=None, nofix=(), curr=None, tho=None, fix1=()):
     """Two receivers: instance 0 with a 3D fix (accuracies as given, with `spikes` =
     [(t0, t1, hacc)] where HAcc jumps), instance 1 an NMEA unit that never gets a fix
     and reports HAcc 0 and the saturated VDop 655.35.
@@ -166,6 +166,7 @@ def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=
     omits XKF1), `ekf1` a second core 1 when given, `pi` an XKF4.PI written for both
     cores when given. Each of those takes a constant tuple or a callable of t.
     `nofix=[(t0, t1)]` drops GPS0 to Status 1 in those spans.
+    `fix1=[(t0, t1)]` gives GPS1 Status 3, 8 sats and a position 3.0 m east of GPS0 in those spans.
     `curr` is a callable t -> A written as BAT instance 0 at 10 Hz (Volt 25.0).
     `tho` is a callable t -> CTUN.ThO written at 10 Hz (ThH 0.4).
     `params` are written as PARM records. `ubx2` is a callable of t returning (magI, magQ)
@@ -195,7 +196,11 @@ def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=
             if u is not None:
                 ofs_i, mag_i, ofs_q, mag_q = (0, *u[:1], 0, *u[1:]) if len(u) == 2 else u
                 w.msg("UBX2", TimeUS=us, Instance=0, ofsI=ofs_i, magI=mag_i, ofsQ=ofs_q, magQ=mag_q)
-        if second:
+        if second and any(a <= t <= b for a, b in fix1):
+            w.msg("GPS", TimeUS=us, I=1, Status=3, NSats=8, HDop=1.0, Lat=30.0 + t * 1e-6,
+                  Lng=-140.0 + 3.0 / (111320.0 * math.cos(math.radians(30.0 + t * 1e-6))), Alt=100.0,
+                  GMS=int(t * 1000), GWk=2400)
+        elif second:
             w.msg("GPS", TimeUS=us, I=1, Status=1, NSats=0, HDop=99.99, Lat=0.0, Lng=0.0, Alt=0.0,
                   GMS=0, GWk=0)
             w.msg("GPA", TimeUS=us, I=1, VDop=655.35, HAcc=0.0, VAcc=0.0, SAcc=0.0, Delta=99)
@@ -526,6 +531,40 @@ def test_gps_takeoff_not_reported_without_takeoff():
     assert not any(t["name"] == "gps_takeoff" for t in sec.tables)
     assert "No take-off in this window" in _notes(sec)
     assert any(t["name"] == "gps0_bins" for t in sec.tables)
+
+
+def test_fix_timeline_secondary_receiver():
+    log = _gps_log("fixtl.bin", fix1=[(25.0, 60.0), (65.0, 120.0)])
+    sec = check_gps(log, airborne_window(log, method="ev"))
+    rows = {r["gps"]: r for r in _rows(sec, "gps_fix")}
+    g1, g0 = rows["GPS1"], rows["GPS0"]
+    assert g1["first 3D fix (s from log start)"] == pytest.approx(25.0, abs=0.2)
+    assert g1["vs take-off (s)"] == pytest.approx(15.0, abs=0.2)
+    assert g1["outages"] == 1
+    assert g1["longest (s)"] == pytest.approx(5.0, abs=0.2)
+    assert g1["dist to GPS0 med (m)"] == pytest.approx(3.0, abs=0.1)
+    r = _results(sec)["GPS1 first 3D fix"]
+    assert r.status == "WARN" and "after take-off" in r.summary, r.summary
+    assert g0["first 3D fix (s from log start)"] == pytest.approx(0.0, abs=0.2)
+    assert g0["dist to GPS0 med (m)"] is None
+    assert _results(sec)["GPS0 first 3D fix"].status == "PASS"
+
+
+def test_fix_timeline_never_fixed():
+    log = _gps_log("fixtl_never.bin")
+    sec = check_gps(log, airborne_window(log, method="ev"))
+    r = _results(sec)["GPS1 first 3D fix"]
+    assert r.status == "WARN" and "never" in r.summary, r.summary
+    row = {r["gps"]: r for r in _rows(sec, "gps_fix")}["GPS1"]
+    assert row["dist to GPS0 med (m)"] is None and row["dist p95 (m)"] is None
+
+
+def test_fix_timeline_outage_open_at_log_end():
+    log = _gps_log("fixtl_open.bin", fix1=[(5.0, 100.0)])
+    sec = check_gps(log, airborne_window(log, method="ev"))
+    row = {r["gps"]: r for r in _rows(sec, "gps_fix")}["GPS1"]
+    assert row["outages"] == 1
+    assert row["longest (s)"] == pytest.approx(20.0, abs=0.2)
 
 
 # ------------------------------------------------------------ issue #6

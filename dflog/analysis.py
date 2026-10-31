@@ -1571,6 +1571,7 @@ def check_gps(log, w):
     _gps_bins(log, w, gps, vel, ubx, sec)
     _gps_vs_power(log, w, gps, vel, sec)
     _gps_takeoff(log, w, gps, sec)
+    _gps_fix_timeline(log, w, gps, sec)
     if len(gps) > 1:
         sec.note("With two GPS units, the differential is the diagnostic. Both degraded similarly\n"
                  "implicates a shared external emitter; one much worse than the other implicates that\n"
@@ -1935,6 +1936,81 @@ def _gps_takeoff(log, w, gps, sec):
     if rows:
         sec.table("gps_takeoff", ["gps", "take-off (s from log start)", "status", "sats", "HAcc (m)",
                                   "HDOP"], rows)
+
+
+GPS_FIX_NOTE_MAX = 10         # outages listed per receiver in the note
+
+
+def _gps_fix_timeline(log, w, gps, sec):
+    """When each receiver first got a 3D fix, how often it lost it, and how far it sits from
+    GPS0 (issue #14). Over the whole log: acquisition happens before take-off. An outage runs
+    from the last fixed sample to the next one (to the last sample if still open at log end)."""
+    start = log.duration()[0]
+    g0 = gps.get(0)
+    ref = None
+    if g0 is not None and not g0.empty and {"t", "Lat", "Lng", "Status"} <= set(g0.columns) and len(g0) > 1:
+        ref = g0
+    rows, lines = [], []
+    for i, g in sorted(gps.items()):
+        if g.empty or "Status" not in g.columns or "t" not in g.columns:
+            continue
+        t = g["t"].values
+        fixed = g["Status"].values >= 3
+        name = f"GPS{i}"
+        if not fixed.any():
+            rows.append([name, None, None, None, None, None, None, None])
+            sec.add(Result(f"{name} first 3D fix", WARN, "never got a 3D fix in the log",
+                           evidence=dict(n=int(len(g))), source="issue #14"))
+            continue
+        first = float(t[np.argmax(fixed)])
+        outages = []
+        k = int(np.argmax(fixed))
+        n = len(t)
+        while k < n:
+            if fixed[k]:
+                k += 1
+                continue
+            a = float(t[k - 1])
+            j = k
+            while j < n and not fixed[j]:
+                j += 1
+            outages.append((a, float(t[j]) if j < n else float(t[-1])))
+            k = j
+        durs = [b - a for a, b in outages]
+        med = p95 = None
+        if i > 0 and ref is not None and {"Lat", "Lng"} <= set(g.columns):
+            rs = np.interp(t, ref["t"].values, ref["Status"].values.astype(float))
+            ok = fixed & (rs >= 2.5)
+            if ok.any():
+                lat0 = np.interp(t[ok], ref["t"].values, ref["Lat"].values)
+                lng0 = np.interp(t[ok], ref["t"].values, ref["Lng"].values)
+                dx = (g["Lng"].values[ok] - lng0) * 111320.0 * np.cos(np.radians(lat0))
+                dy = (g["Lat"].values[ok] - lat0) * 110540.0
+                d = np.sqrt(dx ** 2 + dy ** 2)
+                med, p95 = float(np.median(d)), float(np.percentile(d, 95))
+        takeoff = _has_takeoff(w)
+        rows.append([name, first - start, first - w.t0 if takeoff else None, len(outages),
+                     max(durs) if durs else 0.0, float(sum(durs)), med, p95])
+        if takeoff and first > w.t0:
+            sec.add(Result(f"{name} first 3D fix", WARN,
+                           f"first 3D fix {first - w.t0:.1f} s after take-off",
+                           evidence=dict(first_s=first - start, after_takeoff_s=first - w.t0),
+                           source="issue #14"))
+        else:
+            sec.add(Result(f"{name} first 3D fix", PASS,
+                           f"first 3D fix at {first - start:.1f} s from log start",
+                           evidence=dict(first_s=first - start), source="issue #14"))
+        if outages:
+            shown = ", ".join(f"{a - start:.1f}-{b - start:.1f} s ({b - a:.1f} s)"
+                              for a, b in outages[:GPS_FIX_NOTE_MAX])
+            more = len(outages) - GPS_FIX_NOTE_MAX
+            lines.append(f"{name} outages: {shown}" + (f", +{more} more" if more > 0 else ""))
+    if rows:
+        sec.table("gps_fix", ["gps", "first 3D fix (s from log start)", "vs take-off (s)", "outages",
+                              "longest (s)", "no fix after first (s)", "dist to GPS0 med (m)",
+                              "dist p95 (m)"], rows)
+    for line in lines:
+        sec.note(line)
 
 
 def _ubx2_mags(log, i):
