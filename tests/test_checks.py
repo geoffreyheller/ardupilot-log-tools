@@ -23,6 +23,7 @@ except ImportError:
 
 from dflog import Log, airborne_window                                   # noqa: E402
 from dflog.analysis import check_gps, check_motors, check_notch, check_power   # noqa: E402
+from dflog.analysis import _Params, _hover_throttle, _throttle_at               # noqa: E402
 from dflog.checks import T                                               # noqa: E402
 from synthlog import LogWriter, standard_log                             # noqa: E402
 
@@ -679,6 +680,24 @@ def test_missing_column_names_the_near_miss():
     # the happy path is untouched
     assert d["HDop"].iloc[0] == pytest.approx(0.8, abs=0.01)
     assert log.column("GPS", "HDOP") == "HDop" and log.column("GPS", "Clip0") is None
+
+
+# ------------------------------------------------------------ issue #18
+
+def test_throttle_helpers_scale_permille_and_fall_back_to_param():
+    """CTUN.ThO logged in permille is read as 0-1, and a hover throttle the log never
+    learned (ThH 0) falls back to MOT_THST_HOVER."""
+    w = _writer()
+    _params(w, MOT_THST_HOVER=0.35)
+    for i in range(int(SPAN * HZ)):
+        w.msg("CTUN", TimeUS=int(i / HZ * 1e6), ThO=400.0, ThH=0.0, BAlt=5.0)
+    log = _load(w, "permille.bin")
+    win = airborne_window(log, method="none")
+    assert _throttle_at(log, np.array([50.0]))[0] == pytest.approx(0.40, abs=1e-3)
+    assert _hover_throttle(log, win, _Params(log)) == pytest.approx(0.35)
+    w = _writer()
+    w.msg("BAT", TimeUS=1000, Inst=0, Volt=25.0, Curr=1.0, CurrTot=0.0)
+    assert _throttle_at(_load(w, "no_ctun.bin"), np.array([0.0])) is None
 
 
 if __name__ == "__main__":

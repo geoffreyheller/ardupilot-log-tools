@@ -319,6 +319,30 @@ def _fastest_gyro_hz(log):
 
 # ------------------------------------------------------------------- vibration
 
+def _throttle_at(log, t):
+    """CTUN.ThO (older firmware: ThrOut) interpolated onto times `t`, as 0-1 even when the
+    log carries it in permille. None when CTUN or both columns are absent."""
+    ctun = log.df("CTUN")
+    col = "ThO" if "ThO" in ctun.columns else ("ThrOut" if "ThrOut" in ctun.columns else None)
+    if ctun.empty or col is None:
+        return None
+    tho = np.interp(t, ctun["t"].values, ctun[col].values)
+    if np.nanmax(tho) > 1.5:
+        tho = tho / 1000.0
+    return tho
+
+
+def _hover_throttle(log, w, params):
+    """Hover throttle: the learned CTUN.ThH median in the window, else MOT_THST_HOVER."""
+    ctun = log.df("CTUN")
+    thh = np.nan
+    if "ThH" in ctun.columns:
+        thh = float(np.nanmedian(w.clip(ctun)["ThH"]))
+    if not np.isfinite(thh) or thh <= 0:
+        thh = params.get("MOT_THST_HOVER", np.nan)
+    return thh
+
+
 def check_vibration(log, w):
     d = w.clip(log.df("VIBE"))
     if d is None or d.empty:
@@ -1279,23 +1303,17 @@ def _current_bands(log, w, i, g, off, params, sec):
              MOT_THST_HOVER)
     full   - inside the window, ThO >= 0.95
     """
-    ctun = log.df("CTUN")
-    col = "ThO" if "ThO" in ctun.columns else ("ThrOut" if "ThrOut" in ctun.columns else None)
-    if ctun.empty or col is None or "Curr" not in g.columns or len(g) < 2:
+    if "Curr" not in g.columns or len(g) < 2:
         return
     t = g["t"].values
-    tho = np.interp(t, ctun["t"].values, ctun[col].values)
-    if np.nanmax(tho) > 1.5:
-        tho = tho / 1000.0
+    tho = _throttle_at(log, t)
+    if tho is None:
+        return
     cur = g["Curr"].values
     volt = g["Volt"].values if "Volt" in g.columns else np.full(t.size, np.nan)
     inw = w.mask(t)
     stopped = motors_stopped(log, t, params)
-    thh = np.nan
-    if "ThH" in ctun.columns:
-        thh = float(np.nanmedian(w.clip(ctun)["ThH"]))
-    if not np.isfinite(thh) or thh <= 0:
-        thh = params.get("MOT_THST_HOVER", np.nan)
+    thh = _hover_throttle(log, w, params)
     hov_lo, hov_hi = thh - 0.04, thh + 0.04
     bands = [("idle", "<= 0.05, armed on the ground", ~inw & ~stopped & (tho <= 0.05)),
              ("hover", f"{hov_lo:.2f}-{hov_hi:.2f} (ThH {thh:.3f})" if np.isfinite(thh) else "no hover throttle known",
