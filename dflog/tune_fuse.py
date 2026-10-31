@@ -62,9 +62,9 @@ _SRC_PLAN23 = "docs/pid-tuning-plan.md section 2.3 (pipeline)"
 _SRC_PLAN9 = "docs/pid-tuning-plan.md section 9 (open decisions 3 and 4: yaw, ACC_MAX)"
 _SRC_CAVEAT = "docs/pid-tuning-plan.md section 2.5, tier C calibration caveat (WP3, 2026-09-17)"
 _SRC_ACPID_RANGES = ("ArduCopter AC_AttitudeControl_Multi.cpp var_info @Range for ATC_RAT_*; "
-                     "reference/pid-tuning-sources.md section 2")
-_SRC_WIKI6 = "ardupilot.org wiki setting-up-for-tuning.rst / autotune.rst; reference/pid-tuning-sources.md section 6"
-_SRC_MP = "Mission Planner ConfigInitialParams.cs; reference/pid-tuning-sources.md section 6"
+                     "`alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 2")
+_SRC_WIKI6 = "ardupilot.org wiki setting-up-for-tuning.rst / autotune.rst; `alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 6"
+_SRC_MP = "Mission Planner ConfigInitialParams.cs; `alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 6"
 _SRC_AXES = "ArduCopter AC_AutoTune AUTOTUNE_AXES bitmask (1 roll, 2 pitch, 4 yaw, 8 yaw D)"
 
 

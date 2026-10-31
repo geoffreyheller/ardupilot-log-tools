@@ -89,11 +89,11 @@ __all__ = ["IDENT_CONSTANTS", "identify", "segment_spectra", "pool_spectra", "fi
 
 _SRC_PLAN = "docs/pid-tuning-plan.md section 2.4 (plant identification)"
 _SRC_BP = ("Bendat & Piersol, Random Data, random error of a frequency-response estimate; "
-           "reference/pid-tuning-sources.md section 7.1")
+           "`alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 7.1")
 _SRC_HELI = ("ArduCopter libraries/AC_AutoTune/AC_AutoTune_Heli.cpp max_allowed_P / max_allowed_D; "
-             "reference/pid-tuning-sources.md section 5")
+             "`alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 5")
 _SRC_WP5 = "docs/pid-tuning-plan.md section 5 WP5 (this module)"
-_SRC_MARGIN = ("2026-09-30 Brisket validation (reference/pitfalls.md, PID tuning): the largest gain whose full "
+_SRC_MARGIN = ("2026-09-30 Brisket validation (`alog docs pitfalls` (reference/pitfalls.md), PID tuning): the largest gain whose full "
                "C(z) G loop keeps tune_phase_margin_deg / tune_gain_margin_db (warn levels)")
 
 

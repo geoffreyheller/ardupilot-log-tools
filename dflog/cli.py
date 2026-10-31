@@ -938,7 +938,7 @@ def cmd_schema(args):
                      results="[result]", tables="[{name, columns, rows}]", notes="[markdown str]"),
         integrity=dict(ok="bool: no error-level issue", worst="ok|info|warning|error",
                        issues="[{code, severity, subject, message, count, first_offset, offsets, detail}]",
-                       codes="see reference/integrity-codes.md"),
+                       codes="see `alog docs integrity-codes` (reference/integrity-codes.md)"),
         window=dict(t0="s since boot", t1="s", duration_s="s", method="how it was chosen - quote it",
                     note="str", n_flights="int, flights the log holds (when known)",
                     flight_index="1-based flight this window is, or null"),

@@ -79,15 +79,15 @@ REFUSAL_CODES = ("NO_PID_MESSAGES", "PID_RATE_TOO_LOW", "IRREGULAR_SAMPLING",
 # -------------------------------------------------------------------- constants
 
 _SRC_AUTOTUNE = ("ArduCopter libraries/AC_AutoTune/AC_AutoTune_Multi.cpp (master 2026-09); "
-                 "reference/pid-tuning-sources.md section 1.2")
-_SRC_AUTOTUNE_H = "ArduCopter libraries/AC_AutoTune/AC_AutoTune.h; reference/pid-tuning-sources.md section 1.2"
+                 "`alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 1.2")
+_SRC_AUTOTUNE_H = "ArduCopter libraries/AC_AutoTune/AC_AutoTune.h; `alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 1.2"
 _SRC_AUTOTUNE_PARAMS = ("ArduCopter AC_AutoTune_Multi var_info defaults; "
-                        "reference/pid-tuning-sources.md section 1.1")
-_SRC_AUTOTUNE_RULES = "AC_AutoTune_Multi.cpp update rules; reference/pid-tuning-sources.md sections 1.4-1.6"
+                        "`alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 1.1")
+_SRC_AUTOTUNE_RULES = "AC_AutoTune_Multi.cpp update rules; `alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) sections 1.4-1.6"
 _SRC_PIDA = ("PID-Analyzer (Florian Melsheimer, github.com/Plasmatree/PID-Analyzer) Trace class; "
-             "reference/pid-tuning-sources.md section 7.2")
+             "`alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 7.2")
 _SRC_QUIK = ("ArduPilot libraries/AP_Scripting/applets/VTOL-quicktune.lua defaults; "
-             "reference/pid-tuning-sources.md section 4")
+             "`alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 4")
 _SRC_PLAN = "docs/pid-tuning-plan.md section 2.3 (fpvpidlab-style minimum segment)"
 
 
@@ -203,7 +203,7 @@ def all_constants():
 
 
 _SRC_ACPID_DEFAULTS = ("ArduCopter libraries/AC_AttitudeControl/AC_AttitudeControl_Multi.h defaults; "
-                       "reference/pid-tuning-sources.md section 2")
+                       "`alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 2")
 _SRC_ATC_DEFAULTS = "ArduCopter libraries/AC_AttitudeControl/AC_AttitudeControl.h defaults"
 _SRC_INS_DEFAULTS = "ArduPilot libraries/AP_InertialSensor/AP_InertialSensor.cpp DEFAULT_GYRO_FILTER"
 _SRC_MOT_DEFAULTS = "ArduPilot libraries/AP_Motors/AP_MotorsMulticopter.h AP_MOTORS_THST_HOVER_DEFAULT"

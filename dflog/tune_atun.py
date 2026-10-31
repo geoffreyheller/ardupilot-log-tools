@@ -70,7 +70,7 @@ FINAL_PARAMS = ("rat_p", "rat_i", "rat_d", "ang_p", "acc_max_dps2", "flte")
 TABLE_HEADERS = ["log", "axis", "steps", "twitches", "complete", "P", "I", "D", "ANG_P", "ACC", "agreement"]
 
 _SRC_STATE = ("ArduPilot libraries/AC_AutoTune/AC_AutoTune.cpp master control_attitude() UPDATE_GAINS "
-              "(fetched 2026-09-17); reference/pid-tuning-sources.md section 1.7")
+              "(fetched 2026-09-17); `alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 1.7")
 _SRC_PLAN = "docs/pid-tuning-plan.md section 2.4 (tier A)"
 
 #: Session-definition constants (windows, not thresholds - like `flights()`'s gap_seconds).
