@@ -53,7 +53,7 @@ Exit code 0 / 1 / 2 is pass / warn / fail; 3 means the input could not be analys
    `reference/thresholds.md`). Every report names the window and the method that chose it.
 3. **Agents first.** `--json` everywhere with one contract (`alog schema`,
    `reference/json-output.md`); structured tables, not markdown inside JSON; deterministic
-   output; errors that say what *does* exist. `RULES.md` is the short contract; `CLAUDE.md`
+   output; errors that say what *does* exist. `RULES.md` is the short contract; `GUIDE.md`
    the operating guide.
 4. **Platform agnostic.** Pure Python 3.9+ on Windows, Linux and macOS; no shell scripts on
    the critical path; UTF-8 output. The test suite runs locally (`tools/ci_local.py`); there is no cloud CI.
@@ -218,7 +218,8 @@ landed at order 0.990 and the second at 2.010.
 ```
 alog.py / plot_notch.py   thin launchers (python alog.py ...)
 RULES.md                  the contract: fail loudly, state the number, agents first
-CLAUDE.md                 the operating guide for an agent analysing a log
+GUIDE.md                  the operating guide for an agent analysing a log
+CLAUDE.md                 imports GUIDE.md; adds repository-development notes
 SKILLS.md                 recipes: the commands, lines to read and validation flight for each common question
 AGENTS.md                 pointer for other agent frameworks
 dflog/
@@ -294,7 +295,7 @@ python tests/test_toolkit.py                 # pinned regression figures (skips 
 LOG_DIR=/path/to/logs python tests/test_toolkit.py
 python tests/test_tune_extract.py            # PID tuning, one file per tier: extract, sim, step, atun, ident, fuse
 python tests/test_tune_docs.py               # the tuning docs agree with tune.LOGGING_REQUIREMENTS, REFUSAL_CODES and T
-python tests/test_docs_api.py                # the CLAUDE.md §1 Python snippet runs and its accessors behave as documented
+python tests/test_docs_api.py                # the GUIDE.md §1 Python snippet runs and its accessors behave as documented
 ```
 
 The regression suite pins hand-verified numbers from two reference logs: attitude error sd

@@ -7,7 +7,7 @@
     w   = airborne_window(log, "rpm")  # one flight, with the method that chose it
     flights(log)                       # every flight the log holds, in time order
 
-See ../CLAUDE.md for how to use this in an analysis session, ../RULES.md for the
+See ../GUIDE.md for how to use this in an analysis session, ../RULES.md for the
 contract every output obeys, and ../reference/ for the message, threshold, pitfall and
 integrity-code references.
 """

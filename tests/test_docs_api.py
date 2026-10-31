@@ -1,4 +1,4 @@
-"""The Python snippet in CLAUDE.md §1 runs, and its accessors return what it says (#20).
+"""The Python snippet in GUIDE.md §1 runs, and its accessors return what it says (#20).
 
 The snippet is executed as written against a synthetic log, with only the file name
 swapped, so an accessor renamed in `dflog` fails here rather than in someone's script.
@@ -22,16 +22,16 @@ except ImportError:
 import synthlog                                                          # noqa: E402
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CLAUDE = os.path.join(ROOT, "CLAUDE.md")
+GUIDE = os.path.join(ROOT, "GUIDE.md")
 
 
 def _snippet():
-    """The first ```python block in CLAUDE.md §1."""
-    with open(CLAUDE, encoding="utf-8") as fh:
+    """The first ```python block in GUIDE.md §1."""
+    with open(GUIDE, encoding="utf-8") as fh:
         text = fh.read()
     sec = text[text.index("## 1. Start here"):text.index("## 2. ")]
     m = re.search(r"```python\n(.*?)```", sec, re.S)
-    assert m, "no ```python block in CLAUDE.md §1"
+    assert m, "no ```python block in GUIDE.md §1"
     return m.group(1)
 
 
@@ -52,7 +52,7 @@ def _run():
     assert '"flight.bin"' in code
     path = _log_path()
     ns = {}
-    exec(compile(code.replace('"flight.bin"', repr(path)), "CLAUDE.md §1", "exec"), ns)
+    exec(compile(code.replace('"flight.bin"', repr(path)), "GUIDE.md §1", "exec"), ns)
     return ns
 
 

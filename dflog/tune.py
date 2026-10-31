@@ -317,7 +317,7 @@ class GainSet:
         vals["loop_hz"] = p.get("loop_hz", "SCHED_LOOP_RATE")
 
         # Hover throttle: the learned value (CTUN.ThH) is what the aircraft did; the
-        # parameter is what it was told (CLAUDE.md section 2, rule 5).
+        # parameter is what it was told (GUIDE.md section 2, rule 5).
         thh = log.field("CTUN", "ThH")
         if thh is not None and np.isfinite(thh).any():
             vals["thst_hover"] = float(np.nanmedian(np.asarray(thh, dtype=float)))
