@@ -328,6 +328,7 @@ def test_gps_velocity_glitches_after_settle_are_graded():
     r = _results(_vel_flight(vel=vel(82.95)))["GPS0 velocity vs EKF"]
     ev = r.evidence
     assert ev["n_over"] == 40 and ev["n_late"] == 30, ev
+    assert "30 after the settle" in r.summary and "s since boot" in r.summary, r.summary
     assert ev["max"] == pytest.approx(1.2, abs=1e-3)
     assert ev["t_max"] == pytest.approx(80.0, abs=0.25)
     assert ev["worst_bin"] == [70.0, 100.0], ev
@@ -386,7 +387,7 @@ def test_ubx2_collapse_airborne_is_flagged():
     row = dict(zip(_table(sec, "ubx2")["columns"], next(r for r in _table(sec, "ubx2")["rows"] if r[0] == "GPS0")))
     assert row["before take-off med"] == 255 and row["after landing med"] == 255
     assert row["airborne med"] < 255 and row["min(magI,magQ)"] == 0
-    assert row["at (s)"] == pytest.approx(40.0, abs=0.1)
+    assert row["at (s since boot)"] == pytest.approx(40.0, abs=0.1)
     r = _results(sec)["GPS0 RF front end (UBX2)"]
     assert r.status == "FAIL" and r.evidence["value"] == pytest.approx(52.4, abs=1.0), r
 
@@ -518,7 +519,7 @@ def test_gps_takeoff_conditions():
 
 def test_gps_takeoff_follows_the_analysed_flight():
     log = _gps_log("takeoff_window.bin")
-    sec = check_gps(log, Window(40.0, 110.0, "test"))
+    sec = check_gps(log, Window(40.0, 110.0, "test", index=1, segments=[(40.0, 110.0)]))
     rows = {r["gps"]: r for r in _rows(sec, "gps_takeoff")}
     assert rows["GPS0"]["take-off (s from log start)"] == pytest.approx(40.0, abs=0.2)
     assert _rows(sec, "gps0_bins")[0]["from (s)"] == 0
@@ -565,6 +566,99 @@ def test_fix_timeline_outage_open_at_log_end():
     row = {r["gps"]: r for r in _rows(sec, "gps_fix")}["GPS1"]
     assert row["outages"] == 1
     assert row["longest (s)"] == pytest.approx(20.0, abs=0.2)
+
+
+def test_fix_timeline_distance_ignores_gps0_dropouts():
+    """GPS0 drops its fix for one 0.1 s sample every 2 s, logging Lat/Lng 0 there. GPS1 is
+    fixed throughout, 20 ms later and 3 m east. A GPS1 sample just before a GPS0 drop
+    must not be compared with a position interpolated toward (0, 0)."""
+    w = _writer()
+    for i in range(int(SPAN * HZ)):
+        t = i / HZ
+        lat = 30.0 + t * 1e-6
+        drop = i % 20 == 0 and i > 0
+        w.msg("GPS", TimeUS=int(t * 1e6), I=0, Status=1 if drop else 3, NSats=12, HDop=0.8,
+              Lat=0.0 if drop else lat, Lng=0.0 if drop else -140.0, Alt=100.0, GMS=int(t * 1000), GWk=2400)
+        t1 = t + 0.02
+        lat1 = 30.0 + t1 * 1e-6
+        w.msg("GPS", TimeUS=int(t1 * 1e6), I=1, Status=3, NSats=8, HDop=1.0, Lat=lat1,
+              Lng=-140.0 + 3.0 / (111320.0 * math.cos(math.radians(lat1))), Alt=100.0,
+              GMS=int(t1 * 1000), GWk=2400)
+    log = _load(w, "fixtl_drop.bin")
+    sec = check_gps(log, airborne_window(log, method="ev"))
+    row = {r["gps"]: r for r in _rows(sec, "gps_fix")}["GPS1"]
+    assert row["dist to GPS0 med (m)"] == pytest.approx(3.0, abs=0.2), row
+    assert row["dist p95 (m)"] == pytest.approx(3.0, abs=0.2), row
+
+
+def test_first_fix_from_the_first_logged_sample():
+    log = _gps_log("fixtl_first.bin", fix1=[(25.0, 120.0)])
+    sec = check_gps(log, airborne_window(log, method="ev"))
+    rs = _results(sec)
+    r0, r1 = rs["GPS0 first 3D fix"], rs["GPS1 first 3D fix"]
+    assert "fixed from the first logged sample (acquisition not in the log)" in r0.summary, r0.summary
+    assert r0.evidence["value"] == pytest.approx(-10.0, abs=0.2), r0.evidence
+    assert "first logged sample" not in r1.summary
+    assert r1.evidence["value"] == pytest.approx(15.0, abs=0.2), r1.evidence
+
+
+def test_first_fix_value_is_from_log_start_without_takeoff():
+    log = _gps_log("fixtl_notakeoff.bin", fix1=[(25.0, 120.0)])
+    sec = check_gps(log, airborne_window(log, method="none"))
+    r = _results(sec)["GPS1 first 3D fix"]
+    assert r.status == "PASS" and "take-off" not in r.summary, r.summary
+    assert r.evidence["value"] == pytest.approx(25.0, abs=0.2), r.evidence
+
+
+def test_explicit_window_has_no_takeoff_and_no_settle():
+    """An explicit window does not start at a take-off: no settle, no take-off table."""
+    log = _gps_log("explicit.bin", vel=lambda t: (1.2, 0.0) if 70.0 <= t <= 72.95 else (0.0, 0.0))
+    sec = check_gps(log, Window(60.0, 100.0, "explicit 60:100 s"))
+    r = _results(sec)["GPS0 velocity vs EKF"]
+    assert r.status != "SKIP", r
+    assert r.evidence["value"] == pytest.approx(10.0, abs=0.5), r.evidence
+    assert "window start" in r.summary, r.summary
+    assert not any(t["name"] == "gps_takeoff" for t in sec.tables)
+    assert "No take-off in this window" in _notes(sec)
+    for rr in sec.results:
+        if rr.name.endswith("first 3D fix"):
+            assert "take-off" not in rr.summary, rr.summary
+
+
+def test_gps_velocity_sparse_secondary_is_skip():
+    """GPS1 holds a fix for 0.2 s (two samples), one of them 0.7 m/s off the EKF: a bin
+    of two samples is not a 50 % glitch rate."""
+    log = _gps_log("sparse.bin", fix1=[(80.0, 80.15)],
+                   ekf=lambda t: (0.7, 0.0) if 79.85 <= t <= 79.95 else (0.0, 0.0))
+    sec = check_gps(log, airborne_window(log, method="ev"))
+    r = _results(sec)["GPS1 velocity vs EKF"]
+    assert r.status == "SKIP", r
+    assert "sample" in r.summary, r.summary
+    assert _results(sec)["GPS0 velocity vs EKF"].status == "PASS"
+
+
+def _two_flight_ubx2_window():
+    return Window(70.0, 110.0, "EV ARMED->DISARMED, flight 2 of 2", index=2,
+                  segments=[(10.0, 50.0), (70.0, 110.0)])
+
+
+def test_ubx2_reference_excludes_other_flights():
+    def ubx2(t):
+        return (0, 0) if 10.0 <= t <= 50.0 or 70.0 <= t <= 110.0 else (255, 255)
+    log = _gps_log("ubx2_two.bin", ubx2=ubx2)
+    r = _results(check_gps(log, _two_flight_ubx2_window()))["GPS0 RF front end (UBX2)"]
+    assert r.status != "PASS", r
+    assert r.status == "FAIL" and r.evidence["ref"] == 255, r
+
+
+def test_ubx2_zero_reference_is_skip():
+    r = _results(_ubx2_flight(lambda t: (0, 0)))["GPS0 RF front end (UBX2)"]
+    assert r.status == "SKIP" and "on-ground" in r.summary, r
+
+
+def test_provisional_gps_thresholds_say_so():
+    for k in ("gps_vel_glitch_pct", "gps_ubx2_low_pct"):
+        assert "provisional" in T[k]["source"], (k, T[k]["source"])
 
 
 # ------------------------------------------------------------ issue #6

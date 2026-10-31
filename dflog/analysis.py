@@ -1666,6 +1666,7 @@ GPS_VEL_GLITCH = 0.5          # m/s: horizontal |v_GPS - v_EKF| above this is a 
 GPS_SETTLE_S = 60.0           # glitches in the first 60 s after take-off are acquisition, not graded
 GPS_BIN_S = 30.0
 GPS_BIN_MIN_S = 10.0          # a trailing partial bin is kept only if it spans at least this long
+GPS_BIN_MIN_FILL = 0.5        # a bin is graded only with >= this x (bin s x the instance's median rate) samples
 GPS_DEFAULT_LAG_S = 0.2       # AP_GPS_Backend::get_lag() default, used when no GPS delay parameter is set
 UBX2_LOW_FRAC = 0.8           # a UBX2 sample is low when min(magI, magQ) < this x the on-ground reference
 
@@ -1728,7 +1729,10 @@ def _gps_velocity(log, w, gps, params, sec):
 
     Graded as the worst 30 s bin, past the first 60 s after take-off, of the percent of
     3D-fix samples whose horizontal velocity differs from the primary EKF core by more
-    than GPS_VEL_GLITCH. Returns {instance: _gps_vel_error result} for later checks."""
+    than GPS_VEL_GLITCH. A window with no take-off (_has_takeoff) has no settle: every
+    bin from its start counts. A bin counts only when it holds at least GPS_BIN_MIN_FILL
+    x its length x the instance's median sample rate, so an intermittent receiver's
+    two-sample bin is not read as a rate. Returns {instance: _gps_vel_error result}."""
     out = {}
     for i, g in sorted(gps.items()):
         name = f"GPS{i} velocity vs EKF"
@@ -1741,31 +1745,56 @@ def _gps_velocity(log, w, gps, params, sec):
         if not len(e["t"]):
             sec.add(Result(name, SKIP, "no 3D fix in the window"))
             continue
+        takeoff = _has_takeoff(w)
+        settle = GPS_SETTLE_S if takeoff else 0.0
         bad = e["err"] > GPS_VEL_GLITCH
-        late = e["t"] >= w.t0 + GPS_SETTLE_S
+        late = e["t"] >= w.t0 + settle
         k = int(np.argmax(e["err"]))
-        pcts = [(100.0 * float(bad[bm].mean()), b0, b1) for b0, b1, bm in _time_bins(w, e["t"])
-                if b0 >= w.t0 + GPS_SETTLE_S and bm.any()]
+        rate = _gps_rate_hz(w, g)
+        bins = [(b0, b1, bm) for b0, b1, bm in _time_bins(w, e["t"]) if b0 >= w.t0 + settle and bm.any()]
+        pcts = [(100.0 * float(bad[bm].mean()), b0, b1) for b0, b1, bm in bins
+                if rate is not None and bm.sum() >= GPS_BIN_MIN_FILL * (b1 - b0) * rate]
+        where = "after the first %g s" % GPS_SETTLE_S if takeoff else "from the window start (no take-off)"
         if not pcts:
-            sec.add(Result(name, SKIP, "no full 30 s bin after the first 60 s"))
+            why = ("no 30 s bin %s" % where if not bins else
+                   "no 30 s bin %s holds %g x the samples its %s Hz logging rate gives (most: %d 3D-fix samples)"
+                   % (where, GPS_BIN_MIN_FILL, fmt(rate) if rate is not None else "unknown",
+                      max(int(bm.sum()) for _, _, bm in bins)))
+            sec.add(Result(name, SKIP, why))
             continue
         pct, b0, b1 = max(pcts)
         lagtxt = f"{e['lag_s']:g} s" + (" (assumed)" if e["lag_assumed"] else "")
+        n_late = int((bad & late).sum())
         sec.add(_grade(
             pct, "gps_vel_glitch_pct", name=name,
-            summary_fmt=("worst 30 s bin after the first 60 s: {v}%% of samples > %g m/s (warn {w}, fail {f}); "
-                         "%d in the window, max %s m/s at %s s; vs XKF1 %s, GPS lag %s")
-                        % (GPS_VEL_GLITCH, int(bad.sum()), fmt(float(e["err"][k])), fmt(float(e["t"][k])),
+            summary_fmt=("worst 30 s bin %s: {v}%% of samples > %g m/s (warn {w}, fail {f}); "
+                         "%d in the window, %d %s, max %s m/s at %s s since boot; vs XKF1 %s, GPS lag %s")
+                        % (where, GPS_VEL_GLITCH, int(bad.sum()), n_late,
+                           "after the settle" if takeoff else "graded", fmt(float(e["err"][k])),
+                           fmt(float(e["t"][k])),
                            f"core {e['core']}" if e["core_from"] == "XKF4.PI" else e["core_from"], lagtxt),
-            n_over=int(bad.sum()), n_late=int((bad & late).sum()), max=float(e["err"][k]),
-            t_max=float(e["t"][k]), worst_bin=[b0, b1], core=e["core"], lag_s=e["lag_s"]))
+            n_over=int(bad.sum()), n_late=n_late, max=float(e["err"][k]),
+            t_max=float(e["t"][k]), worst_bin=[b0, b1], core=e["core"], lag_s=e["lag_s"],
+            settle_s=settle, rate_hz=rate))
     return out
 
 
+def _gps_rate_hz(w, g):
+    """Median sample rate (Hz) of GPS instance `g`'s rows in the window, from the median
+    positive dt; None with fewer than two rows."""
+    gg = w.clip(g)
+    if gg is None or len(gg) < 2 or "t" not in gg.columns:
+        return None
+    dt = np.diff(gg["t"].values)
+    dt = dt[dt > 0]
+    return float(1.0 / np.median(dt)) if dt.size else None
+
+
 def _has_takeoff(w):
-    """True when the window starts at a take-off. The whole-log method and every FALLBACK
-    window (their method strings begin "whole log") have none: w.t0 is just the log start."""
-    return not str(w.method).startswith("whole log")
+    """True when the window starts at a take-off: only flights()-derived windows (they, and
+    their padded copies, carry `segments`). Explicit, hover, arm and mode windows start
+    wherever they were cut, and the whole-log and FALLBACK windows at the log start."""
+    return w.segments is not None and not str(w.method).startswith("whole log")
 
 
 def _gps_bins(log, w, gps, vel, ubx, sec):
@@ -1979,11 +2008,16 @@ def _gps_fix_timeline(log, w, gps, sec):
         durs = [b - a for a, b in outages]
         med = p95 = None
         if i > 0 and ref is not None and {"Lat", "Lng"} <= set(g.columns):
-            rs = np.interp(t, ref["t"].values, ref["Status"].values.astype(float))
-            ok = fixed & (rs >= 2.5)
+            # Keep a sample only where both neighbouring GPS0 rows are fixed, and
+            # interpolate GPS0's position over its fixed rows only: a no-fix row logs
+            # Lat/Lng 0, and interpolating toward it puts GPS0 thousands of km away.
+            ref_t = ref["t"].values
+            ref_fix = ref["Status"].values >= 3
+            both = np.interp(t, ref_t, ref_fix.astype(float)) >= 1.0
+            ok = fixed & both & (t >= ref_t[0]) & (t <= ref_t[-1])
             if ok.any():
-                lat0 = np.interp(t[ok], ref["t"].values, ref["Lat"].values)
-                lng0 = np.interp(t[ok], ref["t"].values, ref["Lng"].values)
+                lat0 = np.interp(t[ok], ref_t[ref_fix], ref["Lat"].values[ref_fix])
+                lng0 = np.interp(t[ok], ref_t[ref_fix], ref["Lng"].values[ref_fix])
                 dx = (g["Lng"].values[ok] - lng0) * 111320.0 * np.cos(np.radians(lat0))
                 dy = (g["Lat"].values[ok] - lat0) * 110540.0
                 d = np.sqrt(dx ** 2 + dy ** 2)
@@ -1991,15 +2025,25 @@ def _gps_fix_timeline(log, w, gps, sec):
         takeoff = _has_takeoff(w)
         rows.append([name, first - start, first - w.t0 if takeoff else None, len(outages),
                      max(durs) if durs else 0.0, float(sum(durs)), med, p95])
+        # `value` is the first fix relative to take-off (negative: before it), or to the
+        # log start when the window has no take-off, so `alog compare` has a number.
+        ev = dict(value=first - w.t0 if takeoff else first - start, first_s=first - start,
+                  relative_to="take-off" if takeoff else "log start", from_first_sample=bool(fixed[0]))
+        if takeoff:
+            ev["after_takeoff_s"] = first - w.t0
         if takeoff and first > w.t0:
             sec.add(Result(f"{name} first 3D fix", WARN,
                            f"first 3D fix {first - w.t0:.1f} s after take-off",
-                           evidence=dict(first_s=first - start, after_takeoff_s=first - w.t0),
-                           source="issue #14"))
+                           evidence=ev, source="issue #14"))
+        elif fixed[0]:
+            sec.add(Result(f"{name} first 3D fix", PASS,
+                           f"fixed from the first logged sample (acquisition not in the log), "
+                           f"{first - start:.1f} s from log start",
+                           evidence=ev, source="issue #14"))
         else:
             sec.add(Result(f"{name} first 3D fix", PASS,
                            f"first 3D fix at {first - start:.1f} s from log start",
-                           evidence=dict(first_s=first - start), source="issue #14"))
+                           evidence=ev, source="issue #14"))
         if outages:
             shown = ", ".join(f"{a - start:.1f}-{b - start:.1f} s ({b - a:.1f} s)"
                               for a, b in outages[:GPS_FIX_NOTE_MAX])
@@ -2025,28 +2069,37 @@ def _ubx2_mags(log, i):
 
 def _ubx2_low(log, w, i):
     """Airborne UBX2 samples of instance i that sit below UBX2_LOW_FRAC x the on-ground
-    reference (issue #14). `ref` is the median of min(magI, magQ) over samples before
-    w.t0 and after w.t1. Returns dict(t, low, ref), or None with no UBX2 or no on-ground
-    sample to reference."""
+    reference (issue #14). `ref` is the median of min(magI, magQ) over on-ground samples:
+    outside the window and outside every flight in the log (w.segments), so another
+    flight's collapse cannot drag the reference down. Returns dict(t, low, ref), or
+    dict(t, low=None, ref, why) when the reference is unusable (none, non-finite or
+    <= 0: "below 0.8 x 0" is never true, so it would PASS anything), or None with no UBX2."""
     m = _ubx2_mags(log, i)
     if m is None:
         return None
     t, _, mi, _, mq = m
     lo = np.minimum(mi, mq)
     ground = (t < w.t0) | (t > w.t1)
-    if not ground.any():
-        return None
-    ref = float(np.nanmedian(lo[ground]))
+    for a, b in (w.segments or ()):
+        ground &= ~((t >= a) & (t <= b))
     air = (t >= w.t0) & (t <= w.t1)
+    if not ground.any():
+        return dict(t=t[air], low=None, ref=None, why="no on-ground UBX2 to reference")
+    ref = float(np.nanmedian(lo[ground]))
+    if not np.isfinite(ref) or ref <= 0:
+        return dict(t=t[air], low=None, ref=ref if np.isfinite(ref) else None,
+                    why="on-ground UBX2 reference unusable: median min(magI, magQ) %s over %d "
+                        "on-ground sample(s), so nothing can be compared with it" % (fmt(ref), int(ground.sum())))
     return dict(t=t[air], low=lo[air] < UBX2_LOW_FRAC * ref, ref=ref)
 
 
 def _gps_ubx2(log, w, sec):
     """u-blox RF front-end health from UBX2 (MON-HW2 I/Q magnitude and offset), issue #14.
 
-    Healthy units sit pinned near 255. Graded as the percent of airborne samples below
-    UBX2_LOW_FRAC x the on-ground median. UBX2 is logged about every 5 s, so it cannot be
-    lined up glitch by glitch. Returns {instance: _ubx2_low result} where one exists."""
+    The magnitude level depends on the unit and its AGC, so there is no universal healthy
+    value: graded as the percent of airborne samples below UBX2_LOW_FRAC x the unit's own
+    on-ground median. UBX2 is logged about every 5 s, so it cannot be lined up glitch by
+    glitch. Returns {instance: _ubx2_low result} where a usable reference exists."""
     out = {}
     if not log.has("UBX2"):
         return out
@@ -2061,7 +2114,10 @@ def _gps_ubx2(log, w, sec):
         med = lambda mask: float(np.nanmedian(lo[mask])) if mask.any() else None
         rng = lambda a: f"{fmt(float(np.nanmin(a)))}..{fmt(float(np.nanmax(a)))}"
         low = _ubx2_low(log, w, i)
-        if low is not None:
+        why = None if low is None else low.get("why")
+        if why is not None:
+            low = None
+        elif low is not None:
             out[i] = low
         rows.append([f"GPS{i}", int(len(t)), float(np.nanmin(mi)), float(np.nanmedian(mi)),
                      float(np.nanmin(mq)), float(np.nanmedian(mq)), rng(oi), rng(oq),
@@ -2070,7 +2126,7 @@ def _gps_ubx2(log, w, sec):
                      100.0 * float(low["low"].mean()) if low is not None and len(low["low"]) else None])
         name = f"GPS{i} RF front end (UBX2)"
         if low is None:
-            sec.add(Result(name, SKIP, "no on-ground UBX2 to reference"))
+            sec.add(Result(name, SKIP, why or "no on-ground UBX2 to reference"))
         elif not len(low["low"]):
             sec.add(Result(name, SKIP, "no airborne UBX2 samples"))
         else:
@@ -2081,14 +2137,16 @@ def _gps_ubx2(log, w, sec):
                                        % (len(low["low"]), UBX2_LOW_FRAC, fmt(low["ref"])),
                            n=int(len(low["low"])), n_low=int(low["low"].sum()), ref=low["ref"]))
     sec.table("ubx2", ["gps", "n", "magI min", "magI med", "magQ min", "magQ med", "ofsI range",
-                       "ofsQ range", "min(magI,magQ)", "at (s)", "before take-off med",
+                       "ofsQ range", "min(magI,magQ)", "at (s since boot)", "before take-off med",
                        "airborne med", "after landing med", "airborne low %"], rows)
     sec.note("UBX2 present for instance(s) " + ", ".join(str(k) for k in sorted(log.instances("UBX2"))) +
              " - UBX2 is emitted only by the u-blox driver, so this identifies which physical\n"
              "unit each GPS instance is. Never infer that from the instance index: the mapping\n"
              "depends on SERIAL port order and can change between param snapshots.")
-    sec.note("UBX2 is u-blox MON-HW2 I/Q magnitude and offset; healthy units sit pinned near 255. "
-             "It is logged about every 5 s, so it cannot be lined up glitch by glitch.")
+    sec.note("UBX2 is u-blox MON-HW2 I/Q magnitude and offset. The magnitude level depends on the "
+             "unit and its AGC, so the grade compares each unit with its own on-ground median "
+             "(ground time outside every flight in the log). It is logged about every 5 s, so it "
+             "cannot be lined up glitch by glitch.")
     return out
 
 
