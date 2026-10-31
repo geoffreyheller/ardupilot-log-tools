@@ -1828,6 +1828,9 @@ def _gps_bins(log, w, gps, vel, ubx, sec):
 
 
 GPS_POWER_MIN_N = 10          # GPA samples a half of the power split needs to be reported
+GPS_POWER_MIN_SPREAD_FRAC = 0.10   # the high half must sit this fraction of the median above it ...
+GPS_POWER_MIN_SPREAD_A = 1.0       # ... and at least this many A (BAT current), or ...
+GPS_POWER_MIN_SPREAD_THO = 0.05    # ... this much throttle (CTUN.ThO, 0-1); else the split is noise
 
 
 def _gps_vs_power(log, w, gps, vel, sec):
@@ -1842,8 +1845,10 @@ def _gps_vs_power(log, w, gps, vel, sec):
     src = None
     for k, b in sorted(log.instances("BAT").items()):
         bb = w.clip(b)
-        if bb is not None and not bb.empty and "Curr" in bb.columns and len(bb) > 1                 and np.isfinite(bb["Curr"].values.astype(float)).any():
+        if bb is not None and not bb.empty and "Curr" in bb.columns and len(bb) > 1:
             ok = np.isfinite(bb["Curr"].values.astype(float))
+            if not ok.any():
+                continue
             src = (f"BAT{k}.Curr (A)", bb["t"].values[ok], bb["Curr"].values.astype(float)[ok])
             break
     if src is not None:
@@ -1875,7 +1880,9 @@ def _gps_vs_power(log, w, gps, vel, sec):
         if not np.isfinite(split):
             continue
         hi = p > split
-        if int(hi.sum()) < GPS_POWER_MIN_N:
+        floor = GPS_POWER_MIN_SPREAD_THO if name == "CTUN.ThO" else GPS_POWER_MIN_SPREAD_A
+        rise = float(np.nanmedian(p[hi])) - split if hi.any() else 0.0
+        if int(hi.sum()) < GPS_POWER_MIN_N or rise < max(GPS_POWER_MIN_SPREAD_FRAC * abs(split), floor):
             dropped.append(f"GPS{i}")
             continue
         h = fix["HAcc"].values
@@ -1896,7 +1903,10 @@ def _gps_vs_power(log, w, gps, vel, sec):
                  "the current reading does not move a median split." % name)
     if dropped:
         sec.note("GPS accuracy vs power: %s omitted, %s never rose meaningfully above its median "
-                 "(fewer than %d samples in the high half)." % (", ".join(dropped), name, GPS_POWER_MIN_N))
+                 "(fewer than %d samples in the high half, or the high half's median is less than "
+                 "max(%g x the split, %g) above the split)."
+                 % (", ".join(dropped), name, GPS_POWER_MIN_N, GPS_POWER_MIN_SPREAD_FRAC,
+                    GPS_POWER_MIN_SPREAD_THO if name == "CTUN.ThO" else GPS_POWER_MIN_SPREAD_A))
 
 
 def _gps_takeoff(log, w, gps, sec):

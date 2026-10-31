@@ -7,6 +7,7 @@ counterparts are in tests/test_largeprop.py.
     python tests/test_checks.py
 """
 
+import math
 import os
 import sys
 import tempfile
@@ -156,7 +157,7 @@ def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temp
 
 
 def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=(0.0, 0.0),
-             ekf=(0.0, 0.0), ekf1=None, pi=None, params=None, ubx2=None, nofix=(), curr=None):
+             ekf=(0.0, 0.0), ekf1=None, pi=None, params=None, ubx2=None, nofix=(), curr=None, tho=None):
     """Two receivers: instance 0 with a 3D fix (accuracies as given, with `spikes` =
     [(t0, t1, hacc)] where HAcc jumps), instance 1 an NMEA unit that never gets a fix
     and reports HAcc 0 and the saturated VDop 655.35.
@@ -166,6 +167,7 @@ def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=
     cores when given. Each of those takes a constant tuple or a callable of t.
     `nofix=[(t0, t1)]` drops GPS0 to Status 1 in those spans.
     `curr` is a callable t -> A written as BAT instance 0 at 10 Hz (Volt 25.0).
+    `tho` is a callable t -> CTUN.ThO written at 10 Hz (ThH 0.4).
     `params` are written as PARM records. `ubx2` is a callable of t returning (magI, magQ)
     or (ofsI, magI, ofsQ, magQ), or None for no record; written as UBX2 instance 0 every
     5 s from t = 0.
@@ -186,6 +188,8 @@ def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=
         w.msg("GPA", TimeUS=us, I=0, VDop=1.1, HAcc=h, VAcc=vacc0, SAcc=sacc0, Delta=200)
         if curr is not None:
             w.msg("BAT", TimeUS=us, Inst=0, Volt=25.0, Curr=curr(t), CurrTot=0.0)
+        if tho is not None:
+            w.msg("CTUN", TimeUS=us, ThO=tho(t), ThH=0.4, BAlt=5.0)
         if ubx2 is not None and i % int(5 * HZ) == 0:
             u = ubx2(t)
             if u is not None:
@@ -448,10 +452,10 @@ def test_gps_bins_exclude_samples_without_a_fix():
     assert row["HAcc med (m)"] == pytest.approx(0.8, abs=1e-6), row
 
 
-def _power_flight(curr):
+def _power_flight(curr, tho=None):
     def vel(t):
         return (1.2, 0.0) if 80.0 <= t <= 82.95 else (0.0, 0.0)
-    log = _gps_log("power.bin", spikes=[(80.0, 82.95, 3.0)], vel=vel, curr=curr)
+    log = _gps_log("power.bin", spikes=[(80.0, 82.95, 3.0)], vel=vel, curr=curr, tho=tho)
     return check_gps(log, airborne_window(log, method="ev"))
 
 
@@ -471,6 +475,19 @@ def test_gps_vs_power_flat_current_is_not_split():
     sec = _power_flight(lambda t: 10.0)
     assert not any(t["name"] == "gps_vs_power" for t in sec.tables)
     assert "never rose meaningfully above its median" in _notes(sec), _notes(sec)
+
+
+def test_gps_vs_power_noisy_flat_current_is_not_split():
+    sec = _power_flight(lambda t: 10.0 + 0.1 * math.sin(7.0 * t))
+    assert not any(t["name"] == "gps_vs_power" for t in sec.tables)
+    assert "never rose meaningfully above its median" in _notes(sec), _notes(sec)
+
+
+def test_gps_vs_power_falls_back_to_throttle():
+    sec = _power_flight(None, tho=lambda t: 0.8 if 80.0 <= t <= 82.95 else 0.4)
+    r = {r["gps"]: r for r in _rows(sec, "gps_vs_power")}["GPS0"]
+    assert r["split on"] == "CTUN.ThO"
+    assert r["vel glitches high"] == 30 and r["vel glitches low"] == 0
 
 
 def test_gps_vs_power_needs_a_source():
