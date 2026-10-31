@@ -394,6 +394,70 @@ def test_ubx2_identity_note_is_kept():
     assert "emitted only by the u-blox driver" in _notes(sec)
 
 
+# ------------------------------------------------------------ issue #14: bins and take-off
+
+def _rows(sec, name):
+    t = _table(sec, name)
+    return [dict(zip(t["columns"], r)) for r in t["rows"]]
+
+
+def test_gpa_table_has_hacc_per_hdop():
+    log = _gps_log("hacc_hdop.bin")
+    sec = check_gps(log, airborne_window(log, method="ev"))
+    t = _table(sec, "gpa")
+    assert t["columns"][-1] == "HAcc/HDOP med"
+    rows = {r["gps"]: r for r in _rows(sec, "gpa")}
+    assert rows["GPS0"]["HAcc/HDOP med"] == pytest.approx(1.0, abs=0.01)
+    assert rows["GPS1"]["HAcc/HDOP med"] is None
+
+
+def _bins_flight():
+    def vel(t):
+        return (1.2, 0.0) if 80.0 <= t <= 82.95 else (0.0, 0.0)
+
+    def ubx2(t):
+        if t < 10.0 or t > 110.0:
+            return (255, 255)
+        return (0, 0) if 80.0 <= t <= 85.0 else None
+    log = _gps_log("bins.bin", spikes=[(50.0, 52.0, 3.0)], vel=vel, ubx2=ubx2)
+    return check_gps(log, airborne_window(log, method="ev"))
+
+
+def test_gps_bins_are_timed_from_takeoff():
+    rows = _rows(_bins_flight(), "gps0_bins")
+    assert [r["from (s)"] for r in rows] == [0, 30, 60, 90]
+    assert [r["vel glitches"] for r in rows] == [0, 0, 30, 0]
+    assert all(r["sats min"] == 12 for r in rows)
+    assert rows[1]["HAcc med (m)"] >= 0.8
+    assert all(r["HAcc med (m)"] == pytest.approx(0.8, abs=1e-6) for i, r in enumerate(rows) if i != 1)
+    assert [r["UBX2 low %"] for r in rows] == [None, None, 100.0, None]
+
+
+def test_gps_takeoff_conditions():
+    rows = {r["gps"]: r for r in _rows(_bins_flight(), "gps_takeoff")}
+    g0, g1 = rows["GPS0"], rows["GPS1"]
+    assert g0["take-off (s from log start)"] == pytest.approx(10.0, abs=0.2)
+    assert g0["status"] == 3 and g0["sats"] == 12 and g0["HAcc (m)"] == pytest.approx(0.8)
+    assert g1["status"] == 1 and g1["HAcc (m)"] is None
+
+
+def test_gps_takeoff_follows_the_analysed_flight():
+    log = _gps_log("takeoff_window.bin")
+    sec = check_gps(log, Window(40.0, 110.0, "test"))
+    rows = {r["gps"]: r for r in _rows(sec, "gps_takeoff")}
+    assert rows["GPS0"]["take-off (s from log start)"] == pytest.approx(40.0, abs=0.2)
+    assert _rows(sec, "gps0_bins")[0]["from (s)"] == 0
+    assert "40" in _notes(sec)
+
+
+def test_gps_takeoff_not_reported_without_takeoff():
+    log = _gps_log("no_takeoff.bin")
+    sec = check_gps(log, airborne_window(log, method="none"))
+    assert not any(t["name"] == "gps_takeoff" for t in sec.tables)
+    assert "No take-off in this window" in _notes(sec)
+    assert any(t["name"] == "gps0_bins" for t in sec.tables)
+
+
 # ------------------------------------------------------------ issue #6
 
 def test_power_thresholds_are_registered():

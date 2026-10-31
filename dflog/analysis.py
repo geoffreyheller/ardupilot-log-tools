@@ -1559,7 +1559,7 @@ def check_gps(log, w):
                                    n_over_warn=int((speed > T["gps_glitch_speed"]["warn"]).sum())))
     sec.table("gps", ["gps", "sats mean", "sats min", "HDOP mean", "HDOP max", "% no 3D fix"], rows)
     _gps_accuracy(log, w, gps, sec)
-    _gps_velocity(log, w, gps, params, sec)
+    vel = _gps_velocity(log, w, gps, params, sec)
     err = log.df("ERR")
     if not err.empty and {"Subsys", "ECode"} <= set(err.columns):
         gl = err[(err["Subsys"] == 11) & (err["ECode"] == 2)]
@@ -1567,7 +1567,9 @@ def check_gps(log, w):
             sec.add(Result("GPS glitch (ERR)", FAIL, f"{len(gl)} GPS_GLITCH error record(s)",
                            evidence=dict(n=len(gl), t=[float(x) for x in gl["t"].values[:10]]),
                            source="LogAnalyzer TestGPSGlitch (ERR Subsys 11 ECode 2)"))
-    _gps_ubx2(log, w, sec)
+    ubx = _gps_ubx2(log, w, sec)
+    _gps_bins(log, w, gps, vel, ubx, sec)
+    _gps_takeoff(log, w, gps, sec)
     if len(gps) > 1:
         sec.note("With two GPS units, the differential is the diagnostic. Both degraded similarly\n"
                  "implicates a shared external emitter; one much worse than the other implicates that\n"
@@ -1617,7 +1619,7 @@ def _gps_accuracy(log, w, gps, sec):
                    "receiver does not report an accuracy estimate (HAcc always 0; the NMEA driver "
                    "supplies none)")
             vdop = "no fix" if fix.empty else "n/a"
-            rows.append([f"GPS{i}", None, None, None, None, None, None, vdop, delta, int(len(fix))])
+            rows.append([f"GPS{i}", None, None, None, None, None, None, vdop, delta, int(len(fix)), None])
             for name in ("horizontal", "vertical", "speed"):
                 sec.add(Result(f"GPS{i} {name} accuracy", SKIP, why))
             continue
@@ -1626,8 +1628,14 @@ def _gps_accuracy(log, w, gps, sec):
         s = describe(reported["SAcc"]) if "SAcc" in has else {}
         vd = float(np.nanmedian(reported["VDop"])) if "VDop" in has else np.nan
         vdop = "n/a" if not np.isfinite(vd) or vd >= _GPA_SATURATED else vd
+        ratio = None
+        if g is not None and "HDop" in g.columns and len(g) > 1:
+            hd = np.interp(reported["t"].values, g["t"].values, g["HDop"].values.astype(float))
+            ok = hd > 0
+            if ok.any():
+                ratio = float(np.nanmedian(reported["HAcc"].values[ok] / hd[ok]))
         rows.append([f"GPS{i}", h.get("p50"), h.get("p95"), v.get("p50"), v.get("p95"),
-                     s.get("p50"), s.get("p95"), vdop, delta, int(len(fix))])
+                     s.get("p50"), s.get("p95"), vdop, delta, int(len(fix)), ratio])
         for key, name, st, unit in (("gps_hacc", "horizontal", h, "m"), ("gps_vacc", "vertical", v, "m"),
                                     ("gps_sacc", "speed", s, "m/s")):
             if st:
@@ -1638,10 +1646,11 @@ def _gps_accuracy(log, w, gps, sec):
     if rows:
         sec.table("gpa", ["gps", "HAcc med (m)", "HAcc p95 (m)", "VAcc med (m)", "VAcc p95 (m)",
                           "SAcc med (m/s)", "SAcc p95 (m/s)", "VDop med", "fix interval (ms)",
-                          "3D-fix samples"], rows)
+                          "3D-fix samples", "HAcc/HDOP med"], rows)
         sec.note("GPA.HAcc/VAcc/SAcc are the receiver's own accuracy estimates (m, m, m/s), graded on "
                  "the median over 3D-fix samples; HDOP above is geometry only. Fail levels are the "
                  "EKF's own GPS-check limits (5 m / 7.5 m / 1.0 m/s). "
+                 + "HAcc/HDOP is the median metres of receiver-estimated error per unit of geometry. "
                  + ("Fix rate from GPA.Delta: " + "; ".join(rates) + "." if rates else ""))
 
 
@@ -1743,6 +1752,97 @@ def _gps_velocity(log, w, gps, params, sec):
             n_over=int(bad.sum()), n_late=int((bad & late).sum()), max=float(e["err"][k]),
             t_max=float(e["t"][k]), worst_bin=[b0, b1], core=e["core"], lag_s=e["lag_s"]))
     return out
+
+
+def _has_takeoff(w):
+    """True when the window starts at a take-off. The whole-log method and every FALLBACK
+    window (their method strings begin "whole log") have none: w.t0 is just the log start."""
+    return not str(w.method).startswith("whole log")
+
+
+def _gps_bins(log, w, gps, vel, ubx, sec):
+    """Per-instance GPS health in GPS_BIN_S bins from w.t0 (take-off), issue #14.
+
+    `vel` is the _gps_velocity result and `ubx` the _gps_ubx2 result. A bin with no UBX2
+    sample reports None, not 0 %: UBX2 is logged about every 5 s."""
+    gpa = log.instances("GPA")
+    any_bins = False
+    for i, g in sorted(gps.items()):
+        gg = w.clip(g)
+        if gg is None or gg.empty or "Status" not in gg.columns:
+            continue
+        gg = gg[gg["Status"] >= 3]
+        if gg.empty:
+            continue
+        aa = w.clip(gpa.get(i))
+        if aa is not None and not aa.empty and "Status" not in aa.columns and "Status" in g.columns                 and len(g) > 1:
+            st = np.interp(aa["t"].values, g["t"].values, g["Status"].values.astype(float))
+            aa = aa[st >= 2.5]
+        v = vel.get(i)
+        u = ubx.get(i)
+        has_err = v is not None and len(v["t"]) > 0
+        rows = []
+        for b0, b1, m in _time_bins(w, gg["t"].values):
+            sats = gg["NSats"].values[m] if "NSats" in gg.columns else np.array([])
+            hacc = sacc = np.array([])
+            if aa is not None and not aa.empty:
+                am = (aa["t"].values >= b0) & ((aa["t"].values <= b1) if b1 >= w.t1 else (aa["t"].values < b1))
+                if "HAcc" in aa.columns:
+                    hv = aa["HAcc"].values[am]
+                    hacc = hv[hv > 0]
+                if "SAcc" in aa.columns:
+                    sv = aa["SAcc"].values[am]
+                    sacc = sv[(aa["HAcc"].values[am] > 0)] if "HAcc" in aa.columns else sv
+            glitches = None
+            if has_err:
+                vm = (v["t"] >= b0) & ((v["t"] <= b1) if b1 >= w.t1 else (v["t"] < b1))
+                glitches = int((v["err"][vm] > GPS_VEL_GLITCH).sum())
+            low = None
+            if u is not None and len(u["t"]):
+                um = (u["t"] >= b0) & ((u["t"] <= b1) if b1 >= w.t1 else (u["t"] < b1))
+                if um.any():
+                    low = 100.0 * float(u["low"][um].mean())
+            rows.append([b0 - w.t0, b1 - w.t0, int(m.sum()),
+                         float(np.nanmin(sats)) if sats.size else None,
+                         float(np.nanmedian(hacc)) if hacc.size else None,
+                         float(np.nanpercentile(sacc, 95)) if sacc.size else None,
+                         glitches, low])
+        if rows:
+            any_bins = True
+            sec.table(f"gps{i}_bins", ["from (s)", "to (s)", "n", "sats min", "HAcc med (m)",
+                                       "SAcc p95 (m/s)", "vel glitches", "UBX2 low %"], rows)
+    if any_bins:
+        sec.note("GPS bins are %g s long, timed from %s; times in the bin tables are seconds after that."
+                 % (GPS_BIN_S, f"take-off ({w.t0:.1f} s since boot)" if _has_takeoff(w)
+                    else f"the window start ({w.t0:.1f} s since boot; no take-off in this window)"))
+
+
+def _gps_takeoff(log, w, gps, sec):
+    """Receiver state at take-off: the last sample at or before w.t0 per instance."""
+    if not _has_takeoff(w):
+        sec.note(f"No take-off in this window ({w.method}): take-off conditions not reported.")
+        return
+    gpa = log.instances("GPA")
+    start = log.duration()[0]
+    rows = []
+    for i, g in sorted(gps.items()):
+        before = g[g["t"] <= w.t0] if "t" in g.columns else g.iloc[0:0]
+        if before.empty:
+            continue
+        r = before.iloc[-1]
+        hacc = None
+        a = gpa.get(i)
+        if a is not None and not a.empty and "HAcc" in a.columns:
+            ab = a[a["t"] <= w.t0]
+            if len(ab) and float(ab.iloc[-1]["HAcc"]) > 0:
+                hacc = float(ab.iloc[-1]["HAcc"])
+        rows.append([f"GPS{i}", w.t0 - start,
+                     int(r["Status"]) if "Status" in before.columns else None,
+                     int(r["NSats"]) if "NSats" in before.columns else None, hacc,
+                     float(r["HDop"]) if "HDop" in before.columns else None])
+    if rows:
+        sec.table("gps_takeoff", ["gps", "take-off (s from log start)", "status", "sats", "HAcc (m)",
+                                  "HDOP"], rows)
 
 
 def _ubx2_mags(log, i):
