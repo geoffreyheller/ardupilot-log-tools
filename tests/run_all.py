@@ -3,7 +3,7 @@
     python tests/run_all.py                 # every file
     python tests/run_all.py cli flights     # only test_cli.py and test_flights.py
 
-Files are found by glob, so a new test file runs here (and in CI) without being listed
+Files are found by glob, so a new test file runs here (and in tools/ci_local.py) without being listed
 anywhere. Each runs standalone through the `_shim` runner, exactly as
 `python tests/test_x.py` would, so pytest is not needed. Exit code is 0 when every file
 passed, 1 otherwise. Tests that need the reference logs skip unless LOG_DIR is set.

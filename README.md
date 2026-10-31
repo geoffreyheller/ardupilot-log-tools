@@ -56,7 +56,7 @@ Exit code 0 / 1 / 2 is pass / warn / fail; 3 means the input could not be analys
    output; errors that say what *does* exist. `RULES.md` is the short contract; `CLAUDE.md`
    the operating guide.
 4. **Platform agnostic.** Pure Python 3.9+ on Windows, Linux and macOS; no shell scripts on
-   the critical path; UTF-8 output; CI runs every test file on all three.
+   the critical path; UTF-8 output. The test suite runs locally (`tools/ci_local.py`); there is no cloud CI.
 
 ---
 
@@ -277,8 +277,9 @@ JsDataflashParser behave on the same inputs.
 ## Tests
 
 ```bash
-python tests/run_all.py                      # every tests/test_*.py, as CI runs it; exit 1 if any failed
+python tests/run_all.py                      # every tests/test_*.py; exit 1 if any failed
 python tests/run_all.py cli flights          # only the files named
+python tools/ci_local.py                     # the pre-merge check: the suite under Python 3.9 and 3.12 (needs uv)
 ```
 
 One file at a time:

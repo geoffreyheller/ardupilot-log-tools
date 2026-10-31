@@ -35,12 +35,14 @@ CI runs only `test_toolkit.py`, `test_parser_integrity.py` and `test_cli.py`. `R
 
 *(2026-10-31: by now there were 14 test files and CI still ran 3.)*
 
+*(2026-10-31, later: the GitHub Actions workflow was removed. Nothing runs in the cloud. "CI" throughout this file now means `tools/ci_local.py`, run locally before merging, which runs `tests/run_all.py` and `alog.py --help` under Python 3.9 and 3.12 on the machine it runs on. Items below that say "add X to CI" mean adding a step to its `STEPS`.)*
+
 - [x] Add a single entry point that runs every file: `tests/run_all.py`, which globs `tests/test_*.py`, runs each in its own process through the shim (no pytest needed), and fails a file that has no `_shim.run` main block rather than counting it as passed.
-- [x] Update `.github/workflows/ci.yml` to use that entry point on all OS/Python combinations.
-- [ ] Fix any test that fails once it actually runs in CI (separate commit per fix, with an explanation). All 14 pass locally on Windows, Python 3.12 and 3.9.25 (numpy 2.0.2, pandas 2.3.3, scipy 1.13.1); Linux and macOS still need CI.
+- [x] Update `.github/workflows/ci.yml` to use that entry point on all OS/Python combinations. *(Superseded 2026-10-31: the workflow was removed; `tools/ci_local.py` runs the same entry point locally.)*
+- [ ] Fix any test that fails once it actually runs in CI (separate commit per fix, with an explanation). All 14 pass locally on Windows, Python 3.12 and 3.9.25 (numpy 2.0.2, pandas 2.3.3, scipy 1.13.1); Linux and macOS are untested: there is no cloud CI, so they need a local run of `tools/ci_local.py` on each.
 - [x] Update `CLAUDE.md` §12, `RULES.md` §5 and `README.md` (Tests, Contributing) so all name the same single command.
 
-**Done when:** CI runs every test file on Windows, Linux and macOS, Python 3.9 and 3.12, and the docs agree.
+**Done when:** `tools/ci_local.py` runs every test file under Python 3.9 and 3.12 and passes on Windows (and on Linux and macOS when run there), and the docs agree.
 
 ---
 

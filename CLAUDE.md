@@ -533,8 +533,11 @@ line in the project's notes has done half the job.
 (WMM expected earth field, magfit) or `mavfft_isb.py`. It is not needed for anything in
 `alog`. See `reference/existing-tools.md`.
 
+There is no cloud CI; before merging, run `python tools/ci_local.py`, which runs the suite
+under Python 3.9 and 3.12 on this machine (it covers this OS only).
+
 Run every test file after changing the parser, the trim math, the checks or the CLI. This
-is the same command CI runs, and it finds each `tests/test_*.py` by glob:
+is the same command `tools/ci_local.py` runs, and it finds each `tests/test_*.py` by glob:
 
 ```bash
 python tests/run_all.py                # every file, each in its own process; exit 1 if any failed
