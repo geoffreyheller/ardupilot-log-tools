@@ -244,25 +244,38 @@ Facts that change the draft plan:
 
 ## Phase S1: Make the engine self-contained
 
-- [ ] Ship the docs as package data: `reference/*.md`, `RULES.md`, `SKILLS.md`,
+*(Worked 2026-10-31 on branch `s1-self-contained-engine`.)*
+
+- [x] Ship the docs as package data: `reference/*.md`, `RULES.md`, `SKILLS.md`,
   `GUIDE.md`, `templates/log-analysis-template.md` → `dflog/docs/` in the wheel, copied
-  at build time (setuptools `package-data`), never committed twice.
-- [ ] Add `alog docs [TOPIC]`: no argument lists topics; `alog docs integrity-codes` prints
-  one. Same exit-code contract. This version-locks the guidance to the code for any
-  agent, with or without the skill.
-- [ ] Change every "see `reference/X.md`" string in output to "see `alog docs X`
-  (reference/X.md)". Add a test that every topic named in output exists in `alog docs`.
-- [ ] Add `ALOG_CACHE_DIR` (env var) / `--cache-dir`: when set, `.dfcache` goes there,
-  keyed by the log's path + size + mtime. Default unchanged.
-- [ ] Docs: the installed form `alog …` is primary everywhere; `python alog.py …` is
-  mentioned once, in the README's "from a clone" section. A test greps the shipped docs
-  for `python alog.py` and fails.
-- [ ] Confirm, on Windows, Linux and macOS, Python 3.9 and 3.12, from a directory that
-  is not the repo: `uvx ardupilot-log-tools alog info <fixture>`, `pipx run …`, and
-  `pip install … && alog …`. Add this as a CI job that builds the wheel and installs it
-  into a fresh venv (catches missing package data, which editable installs hide).
+  at build time, never committed twice. Done with a `build_py` hook in `setup.py` rather
+  than `package-data` (which cannot reach files outside the package); the file list is
+  `dflog/docs.py::sources()`, `MANIFEST.in` puts it in the sdist, and a missing file fails
+  the build.
+- [x] Add `alog docs [TOPIC]`: no argument lists topics; `alog docs integrity-codes` prints
+  one; an unknown topic is exit 3 naming them. Reads the wheel's copy when installed, the
+  repo's files in a clone.
+- [x] Change every "see `reference/X.md`" string in output to "see `alog docs X`
+  (reference/X.md)" (27 strings, mostly threshold and tune-constant `source`s). A test
+  checks every topic named in output exists and no bare path is left.
+- [x] Add `ALOG_CACHE_DIR` (env var) / `--cache-dir`: when set, `.dfcache` goes there.
+  Keyed by a hash of the log's absolute path only: size and mtime are already checked
+  inside the cache, and putting them in the name would leave a stale file per edit.
+- [x] Docs: the installed form `alog …` is primary everywhere (83 replacements).
+  Deviation: besides the README's "From a clone" section, `GUIDE.md` §1 says once that
+  `python alog.py` is the same command in a clone, because `CLAUDE.md` imports `GUIDE.md`
+  and agents working in this repo need the fallback. The test allows exactly that one.
+- [~] Confirm from a directory that is not the repo: done for `pip install <wheel>` on
+  Windows, Python 3.9 and 3.12, by `tools/ci_local.py` (cloud CI no longer exists). It
+  builds the sdist and the wheel from a copy of the files a fresh clone would have (a
+  stale ignored `*.egg-info/SOURCES.txt` in the working tree hid a file missing from
+  `MANIFEST.in`), installs the wheel into a throwaway environment and runs `--version`,
+  `docs` (must be the installed copy), `info` and `all --json` on the fixture. Not done:
+  Linux, macOS, and `uvx`/`pipx` from the git URL, which needs the branch pushed (or, for
+  `uvx ardupilot-log-tools`, a PyPI release).
 - [ ] Attach the wheel to each GitHub release, for sandboxes with no PyPI access but with
-  numpy/pandas/scipy preinstalled (`pip install --no-deps <wheel>`).
+  numpy/pandas/scipy preinstalled (`pip install --no-deps <wheel>`). Moves to S5, which
+  makes the first release.
 
 **Done when:** a clean machine with only `uv` (or only `pipx`) runs `alog all <log> --json`
 and `alog docs pitfalls` from any directory, and the installed-wheel CI job passes.
