@@ -162,7 +162,7 @@ def test_skills_carries_the_error_block_and_the_methods():
 
 def test_guide_md_names_the_command_and_the_pitfalls():
     guide = _read(GUIDE)
-    assert "alog.py tune" in guide and ERROR_LINE in guide
+    assert "alog tune" in guide and ERROR_LINE in guide
     for line in ("standard `LOG_BITMASK` logs PID at 10 Hz", "`ATT` vs `ANG`", "`ATC_ACCEL_x_MAX` is cdeg/s²",
                  "`ATUN.ddt` is unscaled cdeg/s²", "hover-only log gives high coherence", "test gains, not the final"):
         assert line in guide, line
@@ -191,7 +191,7 @@ def test_reference_docs_carry_the_pid_tuning_material():
     tpl = _read(TEMPLATE)
     assert "Tune" in tpl and "withheld" in tpl and "| axis | param | current | recommended | change % | confidence | method | why |" in tpl
     readme = _read(README)
-    assert "Logging for PID tuning" in readme and "alog.py tune" in readme
+    assert "Logging for PID tuning" in readme and "alog tune" in readme
 
 
 if __name__ == "__main__":

@@ -17,22 +17,26 @@ sensor, before/after…) with the commands, the lines to read and the validation
 ## 1. Start here
 
 ```bash
-python alog.py info  flight.bin              # ALWAYS first: identity, integrity, coverage
-python alog.py all   flight.bin --json       # the standard battery, one JSON document
-python alog.py all   flight.bin              # the same as markdown
-python alog.py motors flight.bin --window rpm
-python alog.py hover flight.bin              # steady-hover chunks; --window hover uses one
-python alog.py fft   flight.bin --plot fft.png
-python alog.py compare before.bin after.bin  # like-for-like, identical code both sides
-python alog.py tune  flight.bin [after.bin]  # PID gains with confidence, or an ERROR block naming what to log (§8)
-python alog.py all   flight.bin --flight 2   # one flight of a log that holds several
-python alog.py all   flight.bin --flight all # every flight, one block each
-python alog.py schema                        # the JSON contract, checks, thresholds
+alog info  flight.bin              # ALWAYS first: identity, integrity, coverage
+alog all   flight.bin --json       # the standard battery, one JSON document
+alog all   flight.bin              # the same as markdown
+alog motors flight.bin --window rpm
+alog hover flight.bin              # steady-hover chunks; --window hover uses one
+alog fft   flight.bin --plot fft.png
+alog compare before.bin after.bin  # like-for-like, identical code both sides
+alog tune  flight.bin [after.bin]  # PID gains with confidence, or an ERROR block naming what to log (§8)
+alog all   flight.bin --flight 2   # one flight of a log that holds several
+alog all   flight.bin --flight all # every flight, one block each
+alog schema                        # the JSON contract, checks, thresholds
 ```
 
-`python alog.py` works identically on Windows, Linux and macOS (`pip install -e .` also
-gives an `alog` console script). Exit code is 0 / 1 / 2 for pass / warn / fail and 3 when
-the input could not be analysed.
+`alog` works identically on Windows, Linux and macOS. Install it with
+`pip install git+https://github.com/geoffreyheller/ardupilot-log-tools`, or run it without installing with
+`uvx --from git+https://github.com/geoffreyheller/ardupilot-log-tools alog info flight.bin`; in a clone, `pip install -e .` gives the
+same command and `python alog.py` is it without installing. Python 3.9+, numpy, pandas,
+scipy. `alog --version` says which version you have, and `alog docs` prints this guide and
+every reference document for that version. Exit code is 0 / 1 / 2 for pass / warn / fail
+and 3 when the input could not be analysed.
 
 `info` costs one parse (about 1 s per 16 MB; later runs load a `<log>.dfcache` beside the
 log) and tells you three things nothing else should surprise you about afterwards: what

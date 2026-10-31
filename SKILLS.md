@@ -5,7 +5,7 @@ commands that answer it, the lines of output to read, the decision they support,
 flight that validates the decision. `RULES.md` is the contract these rest on and
 `GUIDE.md` the long-form guide; this file is the short path from a question to a number.
 
-Every command is `python alog.py …` (or `alog …` after `pip install -e .`). Add `--json`
+Every command is `alog …`; `GUIDE.md` §1 says how to install it. Add `--json`
 for the machine-readable form of any of them. Exit codes: 0 pass, 1 warn, 2 fail, 3 the
 input could not be analysed.
 
@@ -18,7 +18,7 @@ Always start with **Skill 0**. Then pick the skill that matches the question.
 **Question:** what is this file, is it intact, and what can it tell me?
 
 ```bash
-python alog.py info flight.bin
+alog info flight.bin
 ```
 
 Read, in order:
@@ -34,8 +34,8 @@ Read, in order:
 Then the standard battery:
 
 ```bash
-python alog.py all flight.bin            # markdown report
-python alog.py all flight.bin --json     # one JSON document for an agent
+alog all flight.bin            # markdown report
+alog all flight.bin --json     # one JSON document for an agent
 ```
 
 The verdict is at the end: counts, the WARN/FAIL findings ranked by severity, and the
@@ -48,9 +48,9 @@ list of skipped checks. Report skips as skips. Delete the `.dfcache` files when 
 **Question:** which flight are these numbers about?
 
 ```bash
-python alog.py info flight.bin                 # lists every flight
-python alog.py all  flight.bin --flight 2      # one of them
-python alog.py all  flight.bin --flight all    # every one, one block each, one verdict
+alog info flight.bin                 # lists every flight
+alog all  flight.bin --flight 2      # one of them
+alog all  flight.bin --flight all    # every one, one block each, one verdict
 ```
 
 The window's method string names the flight (`…, flight 2 of 3`). Analysing one flight of
@@ -87,7 +87,7 @@ you asked for could not be applied and the whole log was used.
 **Question:** why do the motors disagree, and what do I move or replace?
 
 ```bash
-python alog.py motors flight.bin --window rpm --arm-mm 151    # 151 = CG to front motor line, mm
+alog motors flight.bin --window rpm --arm-mm 151    # 151 = CG to front motor line, mm
 ```
 
 Read these, in order:
@@ -127,8 +127,8 @@ not move means the change was not the cause.
 **Question:** is the notch tracking the motors, and by how much does it attenuate them?
 
 ```bash
-python alog.py notch    flight.bin --window rpm
-python alog.py batchfft flight.bin --window rpm      # needs INS_LOG_BAT_MASK=1, OPT=4
+alog notch    flight.bin --window rpm
+alog batchfft flight.bin --window rpm      # needs INS_LOG_BAT_MASK=1, OPT=4
 python plot_notch.py    flight.bin -o notch.png
 ```
 
@@ -164,10 +164,10 @@ doubles the log rate and fills onboard flash.
 **Question:** is vibration acceptable, and what frequency is it at?
 
 ```bash
-python alog.py vibe     flight.bin --window hover     # VIBE p95 and clip counts
-python alog.py fft      flight.bin --list-sources     # what can be transformed, with Nyquist
-python alog.py fft      flight.bin --window hover --plot fft.png
-python alog.py spectrum flight.bin --window rpm       # the same, as a report section
+alog vibe     flight.bin --window hover     # VIBE p95 and clip counts
+alog fft      flight.bin --list-sources     # what can be transformed, with Nyquist
+alog fft      flight.bin --window hover --plot fft.png
+alog spectrum flight.bin --window rpm       # the same, as a report section
 ```
 
 - **Clip events** are the hard failure: the accelerometer saturated and the EKF was fed
@@ -197,8 +197,8 @@ python alog.py spectrum flight.bin --window rpm       # the same, as a report se
 **Question:** is this a gain problem or a filter problem?
 
 ```bash
-python alog.py pid  flight.bin --window rpm
-python alog.py gust flight.bin --window rpm
+alog pid  flight.bin --window rpm
+alog gust flight.bin --window rpm
 ```
 
 - The rate table splits desired-vs-actual error at **5 Hz**: low-band error is a **gain**
@@ -281,12 +281,12 @@ the tuning flight, exactly as for batch logging (Skill 4).
 ### Commands
 
 ```bash
-python alog.py tune flight.bin                        # one log
-python alog.py tune before.bin after.bin              # several logs of one aircraft: plants pool, every gain set is reported
-python alog.py tune flight.bin --axes roll,pitch      # a subset of axes
-python alog.py tune flight.bin --aggr 0.075           # override the log's AUTOTUNE_AGGR for the virtual AutoTune (noted as override)
-python alog.py tune flight.bin --prop-in 10 --json    # add the Mission Planner initial-parameter comparison (`calculator` table)
-python alog.py all  flight.bin                        # the same analysis as the `tune` section, after `gust`
+alog tune flight.bin                        # one log
+alog tune before.bin after.bin              # several logs of one aircraft: plants pool, every gain set is reported
+alog tune flight.bin --axes roll,pitch      # a subset of axes
+alog tune flight.bin --aggr 0.075           # override the log's AUTOTUNE_AGGR for the virtual AutoTune (noted as override)
+alog tune flight.bin --prop-in 10 --json    # add the Mission Planner initial-parameter comparison (`calculator` table)
+alog all  flight.bin                        # the same analysis as the `tune` section, after `gust`
 ```
 
 `--window`, `--pad`, `--flight N` and `--hz-floor` work as everywhere; `--flight all` is
@@ -464,8 +464,8 @@ gain recommendation.
 **Question:** is the GPS working, and better than before?
 
 ```bash
-python alog.py gps flight.bin
-python alog.py compare before.bin after.bin --checks gps
+alog gps flight.bin
+alog compare before.bin after.bin --checks gps
 ```
 
 - **`HDOP` is geometry; `GPA.HAcc` is the receiver's own accuracy estimate in metres**,
@@ -521,7 +521,7 @@ on `--checks gps` and read HAcc median before/after.
 **Question:** what does the sensor read when nothing is drawing, and what does hover cost?
 
 ```bash
-python alog.py power flight.bin
+alog power flight.bin
 ```
 
 - **`BATn current with motors stopped`** — `BAT.Curr` over every sample where each ESC
@@ -549,9 +549,9 @@ offset is wrong at every current but one.
 **Question:** did the change help?
 
 ```bash
-python alog.py compare before.bin after.bin
-python alog.py compare before.bin after.bin --checks motors,notch --window rpm
-python alog.py compare before.bin after.bin --flight 1 --window ev
+alog compare before.bin after.bin
+alog compare before.bin after.bin --checks motors,notch --window rpm
+alog compare before.bin after.bin --flight 1 --window ev
 ```
 
 - Both logs run through identical code. `compare` then checks the two windows are the same
@@ -570,9 +570,9 @@ python alog.py compare before.bin after.bin --flight 1 --window ev
 **Question:** does the flight controller trust its own sensors?
 
 ```bash
-python alog.py ekf       flight.bin
-python alog.py compass   flight.bin
-python alog.py estimates flight.bin
+alog ekf       flight.bin
+alog compass   flight.bin
+alog estimates flight.bin
 ```
 
 - `XKF4` innovation ratios: ArduPilot rejects the measurement at 1.0. Read the **count of
@@ -592,10 +592,10 @@ python alog.py estimates flight.bin
 **Question:** which parameter set does this log belong to?
 
 ```bash
-python alog.py params     flight.bin --non-default          # what differs from firmware defaults
-python alog.py params     flight.bin --diff snapshot.param  # in-log vs a dated capture
-python alog.py params     flight.bin --grep HNTCH
-python alog.py paramcheck flight.bin                        # NaN values, in-flight rewrites, hover-throttle drift
+alog params     flight.bin --non-default          # what differs from firmware defaults
+alog params     flight.bin --diff snapshot.param  # in-log vs a dated capture
+alog params     flight.bin --grep HNTCH
+alog paramcheck flight.bin                        # NaN values, in-flight rewrites, hover-throttle drift
 ```
 
 - A `.param` file says what the aircraft was *told*; the log says what it *did*.
@@ -612,9 +612,9 @@ python alog.py paramcheck flight.bin                        # NaN values, in-fli
 **Question:** what happened, and did the log end in flight?
 
 ```bash
-python alog.py events   flight.bin
-python alog.py flight   flight.bin
-python alog.py brownout flight.bin
+alog events   flight.bin
+alog flight   flight.bin
+alog brownout flight.bin
 ```
 
 - `events` decodes `EV`/`ERR`/`MSG` with subsystem names. **Prearm messages after landing
@@ -631,11 +631,11 @@ python alog.py brownout flight.bin
 **Question:** I need the numbers themselves.
 
 ```bash
-python alog.py types  flight.bin                       # every message, count, rate, fields
-python alog.py fields flight.bin ESC                   # one message: units, MULT, ranges
-python alog.py dump   flight.bin RATE --fields t,RDes,R --every 10 > rate.csv
-python alog.py dump   flight.bin ESC --instance 2 --window rpm --json
-python alog.py files  flight.bin --out embedded/       # hwdef, threads.txt and friends
+alog types  flight.bin                       # every message, count, rate, fields
+alog fields flight.bin ESC                   # one message: units, MULT, ranges
+alog dump   flight.bin RATE --fields t,RDes,R --every 10 > rate.csv
+alog dump   flight.bin ESC --instance 2 --window rpm --json
+alog files  flight.bin --out embedded/       # hwdef, threads.txt and friends
 ```
 
 In Python:

@@ -1,7 +1,7 @@
 # Message and field reference
 
 The messages that matter for copter log analysis, with units and the non-obvious
-interpretations. Run `python alog.py types "<log>"` (or `alog fields "<log>" MSG` for units and ranges) for the exact fields in a specific log —
+interpretations. Run `alog types "<log>"` (or `alog fields "<log>" MSG` for units and ranges) for the exact fields in a specific log —
 they vary by firmware version and `LOG_BITMASK`.
 
 Field names drift between versions. Use `log.field(msg, "NewName", "OldName")` rather than

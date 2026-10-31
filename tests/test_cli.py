@@ -263,6 +263,15 @@ def test_docs_lists_every_canonical_file_and_prints_each_one():
         assert code == 0 and out == docs.read(topic) and out.startswith("#"), topic
 
 
+def test_shipped_docs_use_the_installed_command():
+    # The wheel has no alog.py, so the docs it carries write `alog ...`. GUIDE.md §1 may say,
+    # once, that `python alog.py` is the same command in a clone; nothing else may use it.
+    from dflog import docs
+    uses = {t: docs.read(t).count("alog.py") for t in docs.topics()[0]}
+    assert {t: n for t, n in uses.items() if n} == {"guide": 1}, uses
+    assert "`python alog.py` is it without installing" in docs.read("guide")
+
+
 def test_docs_unknown_topic_is_exit_3_naming_the_topics():
     code, out, err = run("docs", "no-such-topic")
     assert code == 3 and "no-such-topic" in err and "pitfalls" in err

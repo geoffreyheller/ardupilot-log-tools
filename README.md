@@ -9,9 +9,9 @@ source, every command has a JSON form with a published schema, and the documenta
 written for the agent doing the analysis rather than for a person looking at plots.
 
 ```bash
-python alog.py info flight.bin        # what is this, is it intact, what was logged
-python alog.py all  flight.bin        # the standard battery, markdown
-python alog.py all  flight.bin --json # the same, one JSON document
+alog info flight.bin        # what is this, is it intact, what was logged
+alog all  flight.bin        # the standard battery, markdown
+alog all  flight.bin --json # the same, one JSON document
 ```
 
 ```
@@ -63,38 +63,50 @@ Exit code 0 / 1 / 2 is pass / warn / fail; 3 means the input could not be analys
 ## Install
 
 ```bash
-git clone https://github.com/<you>/ardupilot-log-tools.git
-cd ardupilot-log-tools
-pip install -r requirements.txt          # numpy, pandas, scipy (+ matplotlib for plots)
-python alog.py --help
+pip install git+https://github.com/geoffreyheller/ardupilot-log-tools                     # puts `alog` on PATH
+uvx --from git+https://github.com/geoffreyheller/ardupilot-log-tools alog info flight.bin # or run it without installing (uv)
+pip install "ardupilot-log-tools[plot] @ git+https://github.com/geoffreyheller/ardupilot-log-tools"  # plus matplotlib, for --plot
 ```
 
-Or `pip install -e .` for an `alog` console script, or with uv: `uv venv && uv pip install
--r requirements.txt` then `uv run python alog.py ...`. No pymavlink, nothing to compile.
+Python 3.9+ with numpy, pandas and scipy, on Windows, Linux or macOS. No pymavlink, nothing
+to compile. The wheel carries the documentation: `alog docs` lists it, `alog docs pitfalls`
+prints one, matching the installed version.
+
+### From a clone
+
+```bash
+git clone https://github.com/geoffreyheller/ardupilot-log-tools.git
+cd ardupilot-log-tools
+pip install -e ".[test]"                 # `alog` on PATH, editable
+python alog.py --help                    # or, without installing anything: the same command
+```
+
+`python alog.py …` and `alog …` are the same program; the rest of the documentation writes
+`alog`.
 
 ---
 
 ## Use
 
 ```bash
-python alog.py info      flight.bin                 # identity, integrity, coverage - run first
-python alog.py integrity flight.bin                 # every structural and data-quality issue
-python alog.py all       flight.bin [--json]        # the standard battery
-python alog.py motors    flight.bin --window rpm    # one check; rpm = ESC-defined window
-python alog.py motors    flight.bin --arm-mm 151    # CG offset in millimetres (CG to front motor line)
-python alog.py hover     flight.bin                 # steady-hover chunks; --window hover uses one
-python alog.py fft       flight.bin --plot fft.png  # local FFT (scipy) of the best gyro source
-python alog.py fft       flight.bin --list-sources  # every transformable signal with its Nyquist
-python alog.py compare   before.bin after.bin       # like-for-like, identical code both sides
-python alog.py tune      flight.bin [after.bin]     # PID gains with confidence, or the LOG_BITMASK to set (exit 3)
-python alog.py tune      flight.bin --prop-in 10    # plus the Mission Planner initial-parameter comparison
-python alog.py types     flight.bin                 # messages present, rates, fields
-python alog.py fields    flight.bin ESC             # one message's fields, units, MULT, ranges
-python alog.py dump      flight.bin RATE --fields t,RDes,R --every 10 > rate.csv
-python alog.py params    flight.bin --diff snapshot.param
-python alog.py params    flight.bin --non-default   # what differs from firmware defaults
-python alog.py files     flight.bin --out embedded/ # extract FILE records (hwdef, threads...)
-python alog.py schema                               # the JSON contract, checks, thresholds
+alog info      flight.bin                 # identity, integrity, coverage - run first
+alog integrity flight.bin                 # every structural and data-quality issue
+alog all       flight.bin [--json]        # the standard battery
+alog motors    flight.bin --window rpm    # one check; rpm = ESC-defined window
+alog motors    flight.bin --arm-mm 151    # CG offset in millimetres (CG to front motor line)
+alog hover     flight.bin                 # steady-hover chunks; --window hover uses one
+alog fft       flight.bin --plot fft.png  # local FFT (scipy) of the best gyro source
+alog fft       flight.bin --list-sources  # every transformable signal with its Nyquist
+alog compare   before.bin after.bin       # like-for-like, identical code both sides
+alog tune      flight.bin [after.bin]     # PID gains with confidence, or the LOG_BITMASK to set (exit 3)
+alog tune      flight.bin --prop-in 10    # plus the Mission Planner initial-parameter comparison
+alog types     flight.bin                 # messages present, rates, fields
+alog fields    flight.bin ESC             # one message's fields, units, MULT, ranges
+alog dump      flight.bin RATE --fields t,RDes,R --every 10 > rate.csv
+alog params    flight.bin --diff snapshot.param
+alog params    flight.bin --non-default   # what differs from firmware defaults
+alog files     flight.bin --out embedded/ # extract FILE records (hwdef, threads...)
+alog schema                               # the JSON contract, checks, thresholds
 python plot_notch.py     flight.bin -o notch.png    # notch verification chart
 ```
 
@@ -216,12 +228,13 @@ landed at order 0.990 and the second at 2.010.
 ## Layout
 
 ```
-alog.py / plot_notch.py   thin launchers (python alog.py ...)
+alog.py / plot_notch.py   thin launchers, for a clone without installing (python alog.py ...)
 RULES.md                  the contract: fail loudly, state the number, agents first
 GUIDE.md                  the operating guide for an agent analysing a log
 CLAUDE.md                 imports GUIDE.md; adds repository-development notes
 SKILLS.md                 recipes: the commands, lines to read and validation flight for each common question
 AGENTS.md                 pointer for other agent frameworks
+setup.py / MANIFEST.in    build hook: copies the docs above and reference/ into the wheel
 dflog/
   parser.py               .bin reader + Diagnostics + on-disk cache (fails loudly)
   textlog.py              .log text-export reader (flagged as second-class)
@@ -237,6 +250,7 @@ dflog/
   tunesim.py              AC_PID replica, plant and AutoTune twitch simulator (tier B engine and test oracle)
   stats.py / report.py    statistics and markdown helpers
   cli.py                  the agent-facing CLI (markdown + JSON, exit codes)
+  docs.py                 which markdown ships in the wheel; `alog docs` reads it
 reference/
   integrity-codes.md      every diagnostic code, severity and meaning
   json-output.md          the JSON contract
@@ -256,8 +270,10 @@ tests/
   tunesynth.py, test_tune_*.py
                           synthetic fast-logged copter logs and the PID tuning tiers against them
   test_toolkit.py         pinned regression figures; needs LOG_DIR
+  run_all.py              runs every test_*.py, each in its own process
 tools/bootstrap_pymavlink.py (and .sh)   vendor pymavlink when you want mavextra/mavfft_isb
 tools/make_fixture.py   cut a small, scrubbed test fixture out of a real log (tests/fixtures/)
+tools/ci_local.py       local CI: the suite under Python 3.9 and 3.12, and the built wheel
 ```
 
 ---

@@ -23,10 +23,11 @@ Before you touch a log:
 - **Write reports into the aircraft's own project folder**, not here. A template is in
   `templates/log-analysis-template.md`.
 
-Quick start (any OS):
+Quick start (any OS; `pip install -e .` once in this clone, or write `python alog.py` for
+`alog`):
 
 ```bash
-python alog.py info "<path to .bin>"          # identity, integrity, coverage
-python alog.py all  "<path to .bin>" --json   # the standard battery, machine-readable
-python alog.py schema                         # the JSON contract
+alog info "<path to .bin>"          # identity, integrity, coverage
+alog all  "<path to .bin>" --json   # the standard battery, machine-readable
+alog schema                         # the JSON contract
 ```
