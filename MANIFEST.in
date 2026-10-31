@@ -1,0 +1,5 @@
+# The sdist must carry the documentation that setup.py copies into the wheel
+# (dflog/docs.py::sources()); a wheel built from an sdist without it fails the build.
+include RULES.md GUIDE.md SKILLS.md
+include templates/log-analysis-template.md
+recursive-include reference *.md

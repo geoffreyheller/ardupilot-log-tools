@@ -28,7 +28,7 @@ check list and threshold table. Non-finite floats are `null`. Bytes are Latin-1 
 }
 ```
 
-`log` is absent for `schema`; `window` and `flights` are present only when a window was
+`log` is absent for `schema` and `docs`; `window` and `flights` are present only when a window was
 used.
 
 `window.hz_floor` is present when the `rpm` detector chose the window: the
@@ -127,6 +127,7 @@ a thing.
 | `fft` | `fft: {source, fs_hz, band_hz, timing, esc_fundamental_hz, peaks: {axis: [{freq_hz, psd, db_above_floor, prominence_db, order}]}, warnings, spectrum (with --spectrum), plot, csv}`; with `--list-sources`: `sources` |
 | `files` | `files: [{name, bytes}]`, `written: [path]` |
 | `schema` | `exit_codes`, `result`, `section`, `integrity`, `window`, `flights`, `per_flight`, `checks`, `window_methods`, `compare`, `tune`, `thresholds`, `tune_constants: {name: {value, source, note}}` (the PID-tuning algorithm constants, every one with its provenance) |
+| `docs` | no `log`: `where` (`installed` = the copy inside the wheel, `repository` = a clone read in place) and `topics: [{topic, title}]`; with a topic: `topic`, `text` (the markdown, verbatim). An unknown topic is the error document, exit 3, naming the topics |
 
 ## Errors
 
