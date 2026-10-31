@@ -1,6 +1,6 @@
 """WP8 of docs/pid-tuning-plan.md: the PID-tuning documentation agrees with the code.
 
-The logging-requirements table is printed verbatim in SKILLS.md and CLAUDE.md from
+The logging-requirements table is printed verbatim in SKILLS.md and GUIDE.md from
 `tune.LOGGING_REQUIREMENTS`; the refusal codes, the thresholds and the confidence priors
 are named in the reference docs. Nothing here reads a log: it reads the markdown and the
 tables in `dflog.tune` / `dflog.tune_fuse` / `dflog.checks` and compares them, so a
@@ -27,6 +27,7 @@ from dflog import tune, tune_fuse                                        # noqa:
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 SKILLS = os.path.join(ROOT, "SKILLS.md")
+GUIDE = os.path.join(ROOT, "GUIDE.md")
 CLAUDE = os.path.join(ROOT, "CLAUDE.md")
 README = os.path.join(ROOT, "README.md")
 THRESHOLDS = os.path.join(ROOT, "reference", "thresholds.md")
@@ -101,17 +102,17 @@ def test_skills_table_is_logging_requirements_verbatim():
         assert got == exp, f"SKILLS.md row {got} != tune.LOGGING_REQUIREMENTS row {exp}"
 
 
-def test_claude_md_table_is_logging_requirements_verbatim():
-    header, body = _table_after(_read(CLAUDE), "PID tuning needs a fast-logged flight")
+def test_guide_md_table_is_logging_requirements_verbatim():
+    header, body = _table_after(_read(GUIDE), "PID tuning needs a fast-logged flight")
     assert [h.lower() for h in header] == ["parameter", "required for a tuning log", "why", "tier"]
     want = _requirements_rows()
     assert len(body) == len(want), (len(body), len(want))
     for got, exp in zip(body, want):
-        assert got == exp, f"CLAUDE.md row {got} != tune.LOGGING_REQUIREMENTS row {exp}"
+        assert got == exp, f"GUIDE.md row {got} != tune.LOGGING_REQUIREMENTS row {exp}"
 
 
-def test_every_required_parameter_is_named_in_skills_claude_and_readme():
-    docs = {name: _read(path) for name, path in (("SKILLS.md", SKILLS), ("CLAUDE.md", CLAUDE), ("README.md", README))}
+def test_every_required_parameter_is_named_in_skills_guide_and_readme():
+    docs = {name: _read(path) for name, path in (("SKILLS.md", SKILLS), ("GUIDE.md", GUIDE), ("README.md", README))}
     for row in tune.LOGGING_REQUIREMENTS:
         for name, text in docs.items():
             assert re.search(r"\b" + re.escape(row["param"]) + r"\b", text), f"{row['param']} is not in {name}"
@@ -129,9 +130,9 @@ def test_the_fix_header_points_at_a_skill_that_exists():
 # ------------------------------------------------------------ (c) refusal codes
 
 def test_every_refusal_code_is_documented():
-    text = _read(SKILLS) + _read(CLAUDE)
+    text = _read(SKILLS) + _read(GUIDE)
     for code in tune.REFUSAL_CODES:
-        assert f"`{code}`" in text, f"{code} is in tune.REFUSAL_CODES but not in SKILLS.md or CLAUDE.md"
+        assert f"`{code}`" in text, f"{code} is in tune.REFUSAL_CODES but not in SKILLS.md or GUIDE.md"
     # and each is in SKILLS.md's numbered list with a meaning, not just mentioned
     skills = _read(SKILLS)
     for code in tune.REFUSAL_CODES:
@@ -159,12 +160,16 @@ def test_skills_carries_the_error_block_and_the_methods():
         assert word in skills
 
 
-def test_claude_md_names_the_command_the_pitfalls_and_the_tests():
-    claude = _read(CLAUDE)
-    assert "alog.py tune" in claude and ERROR_LINE in claude
+def test_guide_md_names_the_command_and_the_pitfalls():
+    guide = _read(GUIDE)
+    assert "alog.py tune" in guide and ERROR_LINE in guide
     for line in ("standard `LOG_BITMASK` logs PID at 10 Hz", "`ATT` vs `ANG`", "`ATC_ACCEL_x_MAX` is cdeg/s²",
                  "`ATUN.ddt` is unscaled cdeg/s²", "hover-only log gives high coherence", "test gains, not the final"):
-        assert line in claude, line
+        assert line in guide, line
+
+
+def test_claude_md_names_the_tune_tests():
+    claude = _read(CLAUDE)
     for name in ("test_tune_extract", "test_tune_sim", "test_tune_step", "test_tune_atun", "test_tune_ident",
                  "test_tune_fuse", "test_tune_docs"):
         assert f"tests/{name}.py" in claude, name

@@ -1,7 +1,7 @@
 # Parameter and bitfield decodings
 
 Things that had to be worked out once. Vehicle-specific values live in each vehicle's
-`CLAUDE.md`; this file holds the *decoding rules*, which are the same everywhere.
+`GUIDE.md`; this file holds the *decoding rules*, which are the same everywhere.
 
 ## Device IDs (`INS_ACC_ID`, `INS_GYR_ID`, `COMPASS_DEV_ID`, `BARO1_DEVID`)
 

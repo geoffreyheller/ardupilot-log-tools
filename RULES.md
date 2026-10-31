@@ -3,7 +3,7 @@
 This project exists so that an AI agent can analyse an ArduCopter dataflash log
 efficiently and, above all, accurately. These rules are the contract that makes that
 possible. They bind two audiences: an agent **using** the tools on a log, and an agent
-**changing** the tools. `CLAUDE.md` is the long-form guide; this file is the part you must
+**changing** the tools. `GUIDE.md` is the long-form guide; this file is the part you must
 not break.
 
 ## 1. Fail loudly. Never repair silently.

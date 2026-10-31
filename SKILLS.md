@@ -3,7 +3,7 @@
 Each skill below is one question an operator or an agent actually asks of a log, with the
 commands that answer it, the lines of output to read, the decision they support, and the
 flight that validates the decision. `RULES.md` is the contract these rest on and
-`CLAUDE.md` the long-form guide; this file is the short path from a question to a number.
+`GUIDE.md` the long-form guide; this file is the short path from a question to a number.
 
 Every command is `python alog.py …` (or `alog …` after `pip install -e .`). Add `--json`
 for the machine-readable form of any of them. Exit codes: 0 pass, 1 warn, 2 fail, 3 the
