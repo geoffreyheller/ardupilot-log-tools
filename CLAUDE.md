@@ -217,7 +217,9 @@ and `--flight` explicitly when it complains; do not read the table until it stop
   stopped** (the sensor's zero offset: one aircraft read 12.3 A, so its 19 A hover was 7 A),
   and current at idle / hover / full throttle raw and offset-corrected with hover watts; sats, HDOP, fix availability, position jumps, and the
   receiver's **own accuracy estimates** `GPA.HAcc`/`VAcc`/`SAcc` — HDOP is geometry, HAcc
-  is metres, and HAcc is what answers "is the GPS better than it was"; CPU
+  is metres, and HAcc is what answers "is the GPS better than it was"; GPS velocity vs
+  the primary EKF core, per-30 s bins, `UBX2` RF health, `gps_vs_power` and the `gps_fix`
+  timeline (see SKILLS.md Skill 8); CPU
   load, slow loops, free memory, internal errors.
 - **spectrum** — a local Welch PSD (scipy) of the fastest gyro source with peaks labelled
   in motor orders. It states the source, its Nyquist limit and the timing jitter, and

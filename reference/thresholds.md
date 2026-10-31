@@ -91,8 +91,8 @@ average.
 | `gps_hacc` | 2.0 m | 5.0 m | fail: ArduPilot `AP_NavEKF3::calcGpsGoodToAlign` (`EK3_GPS_CHECK`) rejects hAcc > 5 m; warn: MEAS — `GPA.HAcc` median over 3D-fix samples. A receiver behind a bad ground plane read 4.25 m, the same receiver fixed read 0.94 then 0.64 m (issue #5) |
 | `gps_vacc` | 3.0 m | 7.5 m | fail: EKF3 rejects vAcc > 7.5 m; warn: MEAS — `GPA.VAcc` median (5.69 → 1.58 → 0.79 m across the same three flights) |
 | `gps_sacc` | 0.5 m/s | 1.0 m/s | fail: EKF3 rejects sAcc > 1.0 m/s; warn: MEAS — `GPA.SAcc` median (1.34 → 0.33 → 0.20 m/s) |
-| `gps_vel_glitch_pct` | 5 % | 15 % | MEAS (provisional) — worst 30 s bin after the first 60 s of the percent of 3D-fix samples whose horizontal GPS velocity differs from the primary EKF core's by more than 0.5 m/s (issue #14) |
-| `gps_ubx2_low_pct` | 5 % | 25 % | MEAS (provisional) — percent of airborne `UBX2` samples (u-blox MON-HW2 I/Q magnitude) whose min(magI, magQ) is below 0.8 × the on-ground median, i.e. an RF front end that collapses in flight (issue #14) |
+| `gps_vel_glitch_pct` | 5 % | 15 % | MEAS (provisional until checked on real logs) — worst 30 s bin after the first 60 s of the percent of 3D-fix samples whose horizontal GPS velocity differs from the primary EKF core's by more than 0.5 m/s (issue #14) |
+| `gps_ubx2_low_pct` | 5 % | 25 % | MEAS (provisional until checked on real logs) — percent of airborne `UBX2` samples (u-blox MON-HW2 I/Q magnitude) whose min(magI, magQ) is below 0.8 × the on-ground median, i.e. an RF front end that collapses in flight (issue #14) |
 
 `HDop` is satellite geometry; `GPA.HAcc` is the receiver's own estimate of its horizontal
 error in metres, and it is the number that answers "is the GPS better than it was". Graded

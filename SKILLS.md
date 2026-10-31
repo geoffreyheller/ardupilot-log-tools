@@ -481,6 +481,26 @@ python alog.py compare before.bin after.bin --checks gps
   emitter; one much worse → that unit.
 - `position jumps` is the implied ground speed between fixes; `GPS glitch (ERR)` is the
   FC's own verdict.
+- **`GPSn velocity vs EKF` is the first line to read for in-flight RF or supply noise**;
+  satellites and fix can both look fine while it fails. It compares GPS velocity
+  (`Spd`/`GCrs`) with the primary EKF core (`XKF4.PI`) at t - lag (`GPSn_DELAY_MS` /
+  `GPS_DELAY_MS`, else 0.2 s assumed), counts samples over 0.5 m/s, and grades the worst
+  30 s bin after the first 60 s (acquisition is not graded). The 5 % / 15 % levels are
+  provisional until checked on real logs.
+- **`gps{i}_bins`** (30 s from take-off: sats min, HAcc med, SAcc p95, vel glitches,
+  `UBX2 low %`) separates acquisition at take-off from mid-flight degradation.
+- **`UBX2`**: magnitudes that collapse airborne and recover on the ground point at
+  self-interference. Graded as the percent of airborne samples below 0.8 x the on-ground
+  median (provisional 5 % / 25 %). It is logged about every 5 s, so it cannot be matched
+  glitch by glitch.
+- **`gps_vs_power`** splits HAcc and glitches at the median current (else throttle) to
+  test the power system directly. Not graded; a row is omitted unless the high half's p95
+  rises clearly above the median.
+- **`HAcc/HDOP med`** (last `gpa` column) is the figure to compare across antenna or
+  ground-plane changes.
+- **`gps_takeoff`** says whether the receiver had converged at take-off (wait for
+  HAcc < 1 m). **`gps_fix`** (whole log) answers "did the secondary ever converge": first
+  3D fix, outages, and distance to GPS0, where "% without fix" cannot.
 
 **Validation flight:** same site, same time of day if you can, one change, then `compare`
 on `--checks gps` and read HAcc median before/after.
