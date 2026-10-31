@@ -110,7 +110,8 @@ def _load(path, args):
     if os.path.isdir(path):
         raise InputError(f"{path} is a directory, not a log")
     try:
-        log = Log(path, use_cache=not args.no_cache, verbose=args.verbose, strict=args.strict)
+        log = Log(path, use_cache=not args.no_cache, verbose=args.verbose, strict=args.strict,
+                  cache_dir=args.cache_dir)
     except LogIntegrityError as exc:
         raise InputError(f"{path}: rejected under --strict\n{exc.diagnostics.render()}")
     if log.diagnostics.has("NO_FMT") or log.diagnostics.has("EMPTY_FILE") or log.n_messages == 0:
@@ -1002,6 +1003,9 @@ def main(argv=None):
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"ardupilot-log-tools {__version__}")
     ap.add_argument("--no-cache", action="store_true", help="force a re-parse; do not read or write .dfcache")
+    ap.add_argument("--cache-dir", metavar="DIR", default=None,
+                    help="keep .dfcache files in DIR instead of beside each log (default: $ALOG_CACHE_DIR, "
+                         "else beside the log)")
     ap.add_argument("--verbose", action="store_true")
     ap.add_argument("--strict", action="store_true",
                     help="refuse (exit 3) any log with error-level integrity issues instead of analysing it")
