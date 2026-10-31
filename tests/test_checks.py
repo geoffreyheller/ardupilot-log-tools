@@ -23,6 +23,7 @@ except ImportError:
 
 from dflog import Log, airborne_window                                   # noqa: E402
 from dflog.analysis import check_gps, check_motors, check_notch, check_power   # noqa: E402
+from dflog.analysis import check_vibration                                      # noqa: E402
 from dflog.analysis import _Params, _hover_throttle, _throttle_at               # noqa: E402
 from dflog.checks import T                                               # noqa: E402
 from synthlog import LogWriter, standard_log                             # noqa: E402
@@ -56,6 +57,7 @@ def _writer():
     w.fmt(209, "IMU", "QBfff", "TimeUS,I,GyrX,GyrY,GyrZ")
     w.fmt(210, "FCN", "QBB" + "f" * 12, "TimeUS,I,NF," + ",".join(f"CF{k}" for k in range(1, 7)) + ","
           + ",".join(f"HF{k}" for k in range(1, 7)))
+    w.fmt(211, "VIBE", "QBfffI", "TimeUS,IMU,VibeX,VibeY,VibeZ,Clip")
     w.msg("MSG", TimeUS=20, Message="ArduCopter V4.7.1 (deadbeef)")
     w.msg("PARM", TimeUS=30, Name="FRAME_CLASS", Value=1.0, Default=1.0)
     w.msg("PARM", TimeUS=31, Name="FRAME_TYPE", Value=1.0, Default=1.0)
@@ -80,7 +82,7 @@ PACK_V = 25.0
 def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temps=(35.0, 36.0, 35.0, 36.0),
                stopped_current=0.0, hover_pwm=1400, idle_pwm=1100, full=(80.0, 90.0), att=None,
                modes=(), hover_thh=0.40, extra_params=None, trim_fn=None, imu_hz=None, fcn=None,
-               end_drop_v=None):
+               end_drop_v=None, vibe=None, vibe_imus=1):
     """Ground (0-5 s motors stopped, 5-10 s armed idle), flight 10-110 s at hover_pwm with a
     full-throttle burst over `full`, landing, then motors stopped again 110-120 s.
 
@@ -92,6 +94,7 @@ def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temp
     `imu_hz` adds a gyro stream at that rate so the coverage/Nyquist logic has a source.
     `fcn` = {esc_instance: centre / RPM-over-60 factor} writes a per-motor notch (FCN, no
     FCNS) as ArduCopter does with INS_HNTCH_OPTS bit 1: CFk follows ESC k-1, NaN while stopped.
+    `vibe` is a callable t -> (VibeX, VibeY, VibeZ, cumulative Clip) written for `vibe_imus` IMUs.
     """
     w = _writer()
     _params(w, SERVO1_MIN=1000, SERVO1_MAX=2000, MOT_SPIN_MIN=0.15, MOT_SPIN_MAX=0.95, MOT_SPIN_ARM=0.10,
@@ -125,6 +128,10 @@ def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temp
             w.msg("ESC", TimeUS=us, Instance=inst, RPM=rpm[m], Volt=v, Curr=curr / 4, Temp=temps[m - 1], Err=2.5)
         w.msg("BAT", TimeUS=us, Inst=0, Volt=v, Curr=curr, CurrTot=tot_mah)
         w.msg("CTUN", TimeUS=us, ThO=tho, ThH=hover_thh, BAlt=0.0 if (stopped or idle) else 5.0)
+        if vibe is not None:
+            x, y, z, clip = vibe(t)
+            for imu in range(vibe_imus):
+                w.msg("VIBE", TimeUS=us, IMU=imu, VibeX=x, VibeY=y, VibeZ=z, Clip=clip)
         if att is not None:
             a = att(t)
             r, p, yw = (a[0], a[1], a[2] if len(a) > 2 else 0.0)
@@ -698,6 +705,97 @@ def test_throttle_helpers_scale_permille_and_fall_back_to_param():
     w = _writer()
     w.msg("BAT", TimeUS=1000, Inst=0, Volt=25.0, Curr=1.0, CurrTot=0.0)
     assert _throttle_at(_load(w, "no_ctun.bin"), np.array([0.0])) is None
+
+
+# A flight that hovers at 5 m/s^2 on every axis, punches out over 80-84 s (28 on X/Y, 10 on
+# Z, 3 clips) and takes one 40 m/s^2 X spike (and 1 clip) at 109 s, inside the last 3 s.
+PUNCH = (80.0, 84.0)
+
+
+def _punch_vibe(t):
+    clip = (3 if t > 82.0 else 0) + (1 if t >= 109.0 else 0)
+    if PUNCH[0] <= t <= PUNCH[1]:
+        return 28.0, 28.0, 10.0, clip
+    if t == 109.0:
+        return 40.0, 5.0, 5.0, clip
+    return 5.0, 5.0, 5.0, clip
+
+
+def _vibe_rows(sec):
+    t = _table(sec, "vibe_bands")
+    return {(r[0], r[1]): dict(zip(t["columns"], r)) for r in t["rows"]}
+
+
+def _punch_log(name, **kw):
+    return _motor_log(name, full=PUNCH, vibe=kw.pop("vibe", _punch_vibe), **kw)
+
+
+def test_vibration_is_banded_by_throttle():
+    log = _punch_log("vibe_bands.bin")
+    sec = check_vibration(log, airborne_window(log, method="ev"))
+    rows = _vibe_rows(sec)
+    assert {(0, "idle"), (0, "hover"), (0, "high"), (0, "touchdown")} <= set(rows), rows
+    assert rows[(0, "hover")]["VibeX p95"] == pytest.approx(5.0, abs=0.1)
+    assert rows[(0, "high")]["VibeX p95"] == pytest.approx(28.0, abs=0.1)
+    assert rows[(0, "high")]["VibeZ p95"] == pytest.approx(10.0, abs=0.1)
+    rs = _results(sec)
+    # the whole-window p95 still hides the punch-outs - that is what the bands are for
+    assert rs["IMU0 VibeX p95"].evidence["value"] == pytest.approx(5.0, abs=0.1)
+    r = rs["IMU0 VibeX p95 (high throttle)"]
+    assert r.status == "WARN" and r.evidence["value"] == pytest.approx(28.0, abs=0.1)
+
+
+def test_touchdown_spike_is_not_blamed_on_punch_outs():
+    log = _punch_log("vibe_touchdown.bin")
+    rows = _vibe_rows(check_vibration(log, airborne_window(log, method="ev")))
+    assert rows[(0, "touchdown")]["VibeX max"] == pytest.approx(40.0)
+    assert rows[(0, "high")]["VibeX max"] == pytest.approx(28.0, abs=0.1)
+    assert rows[(0, "hover")]["VibeX max"] == pytest.approx(5.0, abs=0.1)
+
+
+def test_clips_are_counted_per_band():
+    log = _punch_log("vibe_clips.bin")
+    sec = check_vibration(log, airborne_window(log, method="ev"))
+    rows = _vibe_rows(sec)
+    assert rows[(0, "high")]["clips"] == 3
+    assert rows[(0, "touchdown")]["clips"] == 1
+    assert rows[(0, "hover")]["clips"] == 0
+    assert _results(sec)["IMU0 accel clipping"].evidence["value"] == 4
+
+
+def test_vibe_bands_without_ctun():
+    w = _writer()
+    for i in range(int(SPAN * HZ)):
+        w.msg("VIBE", TimeUS=int(i / HZ * 1e6), IMU=0, VibeX=5.0, VibeY=5.0, VibeZ=5.0, Clip=0)
+    log = _load(w, "vibe_no_ctun.bin")
+    sec = check_vibration(log, airborne_window(log, method="none"))
+    assert not any(t["name"] == "vibe_bands" for t in sec.tables)
+    assert "need CTUN" in _notes(sec)
+    assert "IMU0 VibeX p95" in _results(sec)
+
+
+def test_no_punch_out_means_no_high_band():
+    log = _motor_log("vibe_no_punch.bin", full=(999.0, 999.0), vibe=_punch_vibe)
+    sec = check_vibration(log, airborne_window(log, method="ev"))
+    assert (0, "high") not in _vibe_rows(sec)
+    assert not any(n.endswith("(high throttle)") for n in _results(sec))
+
+
+def test_clip_counter_reset_is_not_negative():
+    def vibe(t):
+        return 5.0, 5.0, 5.0, (7 if 20.0 < t <= 50.0 else 0)
+    log = _punch_log("vibe_clip_reset.bin", vibe=vibe)
+    rows = _vibe_rows(check_vibration(log, airborne_window(log, method="ev")))
+    assert all(r["clips"] >= 0 for r in rows.values()), rows
+
+
+def test_vibe_bands_per_imu():
+    log = _punch_log("vibe_two_imus.bin", vibe_imus=2)
+    sec = check_vibration(log, airborne_window(log, method="ev"))
+    rows = _vibe_rows(sec)
+    assert (0, "high") in rows and (1, "high") in rows
+    rs = _results(sec)
+    assert "IMU0 VibeX p95 (high throttle)" in rs and "IMU1 VibeX p95 (high throttle)" in rs
 
 
 if __name__ == "__main__":

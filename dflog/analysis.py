@@ -343,16 +343,73 @@ def _hover_throttle(log, w, params):
     return thh
 
 
+# issue #18: vibration banded by throttle. The high edge sits at least 0.10 above the hover
+# throttle so the two bands stay disjoint on a heavy aircraft.
+VIBE_HIGH_THO = 0.60
+TOUCHDOWN_S = 3.0
+VIBE_BAND_MIN_N = 10            # 1 s of VIBE at its 10 Hz log rate
+_VIBE_AXES = (("VibeX", "vibe_xy"), ("VibeY", "vibe_xy"), ("VibeZ", "vibe_z"))
+
+
+def _vibe_bands(log, w, i, g, params, sec):
+    """issue #18: one IMU's VIBE p95, max and clips per throttle band; grades the high band.
+
+    idle      - armed on the ground: outside the window, motors turning, ThO <= 0.05
+    hover     - inside the window, |ThO - ThH| <= 0.04
+    high      - inside the window, ThO >= max(VIBE_HIGH_THO, ThH + 0.10)
+    touchdown - the last TOUCHDOWN_S of the window, any throttle; takes precedence
+
+    `g` is unclipped, since idle lies outside the window. Returns the table rows, or None
+    when the log has no throttle to band by.
+    """
+    t = g["t"].values
+    tho = _throttle_at(log, t)
+    if tho is None:
+        return None
+    thh = _hover_throttle(log, w, params)
+    hi_edge = max(VIBE_HIGH_THO, thh + 0.10) if np.isfinite(thh) else VIBE_HIGH_THO
+    inw = w.mask(t)
+    td = inw & (t >= w.t1 - TOUCHDOWN_S) if w.duration > 2 * TOUCHDOWN_S else np.zeros(t.size, dtype=bool)
+    hover = (inw & ~td & (np.abs(tho - thh) <= 0.04) if np.isfinite(thh)
+             else np.zeros(t.size, dtype=bool))
+    bands = [("idle", "<= 0.05, armed on the ground", ~inw & ~motors_stopped(log, t, params) & (tho <= 0.05)),
+             ("hover", f"{thh - 0.04:.2f}-{thh + 0.04:.2f}" if np.isfinite(thh) else "no hover throttle known",
+              hover),
+             ("high", f">= {hi_edge:.2f}", inw & ~td & (tho >= hi_edge)),
+             ("touchdown", f"last {TOUCHDOWN_S:.0f} s of the window", td)]
+    clips = (np.r_[0.0, np.clip(np.diff(g["Clip"].values.astype(float)), 0, None)]
+             if "Clip" in g.columns else None)
+    rows = []
+    for name, label, m in bands:
+        n = int(m.sum())
+        if n < VIBE_BAND_MIN_N:
+            continue
+        st = {ax: describe(g[ax].values[m]) if ax in g.columns else {} for ax, _ in _VIBE_AXES}
+        nclip = int(clips[m].sum()) if clips is not None else None
+        rows.append([i, name, label, n] + [st[ax].get("p95") for ax, _ in _VIBE_AXES]
+                    + [st[ax].get("max") for ax, _ in _VIBE_AXES] + [nclip])
+        if name == "high":
+            for ax, key in _VIBE_AXES:
+                if ax in g.columns:
+                    sec.add(_grade(st[ax].get("p95"), key, name=f"IMU{i} {ax} p95 (high throttle)",
+                                   summary_fmt=f"p95 {{v}} m/s^2 at ThO {label} over {n} samples "
+                                               "(warn {w}, fail {f})",
+                                   max=st[ax].get("max"), n=n, clips=nclip, tho_min=hi_edge))
+    return rows
+
+
 def check_vibration(log, w):
     d = w.clip(log.df("VIBE"))
     if d is None or d.empty:
         return Section("Vibration", [Result("vibration", SKIP, "no VIBE messages in log")], key="vibe")
     inst = log.instance_field("VIBE")
     sec = Section("Vibration", key="vibe")
-    rows = []
+    params = _Params(log)
+    rows, band_rows = [], []
     groups = d.groupby(inst) if inst else [(0, d)]
+    full = log.df("VIBE")
     for i, g in groups:
-        for ax, key in (("VibeX", "vibe_xy"), ("VibeY", "vibe_xy"), ("VibeZ", "vibe_z")):
+        for ax, key in _VIBE_AXES:
             if ax not in g.columns:
                 continue
             s = describe(g[ax])
@@ -364,10 +421,27 @@ def check_vibration(log, w):
             clip = float(g["Clip"].iloc[-1] - g["Clip"].iloc[0])
             sec.add(_grade(clip, "clip_events", name=f"IMU{i} accel clipping",
                            summary_fmt="{v} clip events in the window (warn >{w}, fail >{f})"))
+        br = _vibe_bands(log, w, i, full[full[inst] == i] if inst else full, params, sec)
+        if br is None:
+            band_rows = None
+        elif band_rows is not None:
+            band_rows += br
     sec.table("vibe", ["axis", "mean", "p95", "max"], rows)
+    if band_rows:
+        sec.table("vibe_bands", ["IMU", "band", "ThO band", "n", "VibeX p95", "VibeY p95", "VibeZ p95",
+                                 "VibeX max", "VibeY max", "VibeZ max", "clips"], band_rows,
+                  align=["r", "l", "l"] + ["r"] * 8)
     sec.note("Units are m/s^2. ArduPilot's rule of thumb: below 15 is good, above 30 is a problem.\n"
              "Clipping is the harder failure - any non-zero clip count means the accelerometer\n"
              "saturated and the EKF was fed garbage for those samples.")
+    if band_rows is None:
+        sec.note("Throttle bands need CTUN.ThO; not logged, so only whole-window figures are given.")
+    else:
+        sec.note("Throttle bands (vibe_bands): the whole-window p95 is mostly hover, so punch-out\n"
+                 "vibration shows only in the high band - compare its p95 between flights, not the\n"
+                 f"whole-window max. A band needs {VIBE_BAND_MIN_N} samples to be listed; touchdown\n"
+                 "takes precedence over hover and high.")
+    params.note(sec)
     return sec
 
 
