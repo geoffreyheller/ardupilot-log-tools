@@ -483,6 +483,13 @@ def test_gps_vs_power_noisy_flat_current_is_not_split():
     assert "never rose meaningfully above its median" in _notes(sec), _notes(sec)
 
 
+def test_gps_vs_power_sparse_punches_on_noisy_hover_are_split():
+    sec = _power_flight(lambda t: 40.0 if (t % 10.0) < 1.0 else 10.0 + 0.5 * math.sin(7.0 * t))
+    rows = {r["gps"]: r for r in _rows(sec, "gps_vs_power")} if any(
+        t["name"] == "gps_vs_power" for t in sec.tables) else {}
+    assert "GPS0" in rows, _notes(sec)
+
+
 def test_gps_vs_power_falls_back_to_throttle():
     sec = _power_flight(None, tho=lambda t: 0.8 if 80.0 <= t <= 82.95 else 0.4)
     r = {r["gps"]: r for r in _rows(sec, "gps_vs_power")}["GPS0"]
