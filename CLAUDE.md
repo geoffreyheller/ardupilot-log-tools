@@ -43,13 +43,21 @@ cannot show a 200 Hz motor). Delete `.dfcache` files when you are done.
 In Python:
 
 ```python
-from dflog import Log, airborne_window, mix_for, trim_decomposition, spectral
+from dflog import Log, airborne_window, mix_for, trim_decomposition, spectral, mode_timeline
 
 log  = Log("flight.bin")
 log.diagnostics.ok                    # False if anything in the file was wrong
 w    = airborne_window(log, method="rpm")
 esc  = log.instances("ESC")           # {0: df, 1: df, ...}
 rate = w.clip(log.df("RATE"))         # DataFrame, airborne only
+
+# Common accessors
+w.t0, w.t1, w.duration                # window bounds, s since boot (there is no start/end)
+log.params()                          # {name: value} - a method, not a dict attribute
+log.param("MOT_THST_HOVER", None)     # one value, with a default
+log.param_changes()                   # [(t, name, old, new)] for params changed after boot
+mode_timeline(log)                    # [(t, num, name, reason)]: MODE.Mode is the mode NUMBER,
+                                      # so log.df("MODE").Mode == "LOITER" matches nothing
 ```
 
 ---
@@ -538,6 +546,7 @@ python tests/test_tune_atun.py         # tier A: ATUN reconstruction and branch 
 python tests/test_tune_ident.py        # tier B: plant identification, margins, virtual AutoTune
 python tests/test_tune_fuse.py         # tier D, confidence, fusion, the tune Section
 python tests/test_tune_docs.py         # SKILLS.md/CLAUDE.md/README.md/thresholds.md agree with the tune code
+python tests/test_docs_api.py          # the §1 Python snippet runs, and its accessors return what it says
 ```
 
 The regression tests pin the analysis against hand-verified figures; if a refactor changes
