@@ -156,7 +156,7 @@ def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temp
 
 
 def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=(0.0, 0.0),
-             ekf=(0.0, 0.0), ekf1=None, pi=None, params=None):
+             ekf=(0.0, 0.0), ekf1=None, pi=None, params=None, ubx2=None):
     """Two receivers: instance 0 with a 3D fix (accuracies as given, with `spikes` =
     [(t0, t1, hacc)] where HAcc jumps), instance 1 an NMEA unit that never gets a fix
     and reports HAcc 0 and the saturated VDop 655.35.
@@ -164,7 +164,9 @@ def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=
     `vel` is GPS0's (Spd, GCrs), `ekf` the XKF1 core 0 (VN, VE) written at 10 Hz (False
     omits XKF1), `ekf1` a second core 1 when given, `pi` an XKF4.PI written for both
     cores when given. Each of those takes a constant tuple or a callable of t.
-    `params` are written as PARM records.
+    `params` are written as PARM records. `ubx2` is a callable of t returning (magI, magQ)
+    or (ofsI, magI, ofsQ, magQ), or None for no record; written as UBX2 instance 0 every
+    5 s from t = 0.
     """
     def at(v, t):
         return v(t) if callable(v) else v
@@ -179,6 +181,11 @@ def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=
         w.msg("GPS", TimeUS=us, I=0, Status=3, NSats=12, HDop=0.8, Lat=30.0 + t * 1e-6, Lng=-140.0,
               Alt=100.0, GMS=int(t * 1000), GWk=2400, Spd=spd, GCrs=crs)
         w.msg("GPA", TimeUS=us, I=0, VDop=1.1, HAcc=h, VAcc=vacc0, SAcc=sacc0, Delta=200)
+        if ubx2 is not None and i % int(5 * HZ) == 0:
+            u = ubx2(t)
+            if u is not None:
+                ofs_i, mag_i, ofs_q, mag_q = (0, *u[:1], 0, *u[1:]) if len(u) == 2 else u
+                w.msg("UBX2", TimeUS=us, Instance=0, ofsI=ofs_i, magI=mag_i, ofsQ=ofs_q, magQ=mag_q)
         if second:
             w.msg("GPS", TimeUS=us, I=1, Status=1, NSats=0, HDop=99.99, Lat=0.0, Lng=0.0, Alt=0.0,
                   GMS=0, GWk=0)
@@ -353,6 +360,38 @@ def test_gps_vel_threshold_is_registered_with_a_row():
                         "reference", "thresholds.md")
     with open(path, encoding="utf-8") as f:
         assert any(l.startswith("| `gps_vel_glitch_pct` |") for l in f), "no row in thresholds.md"
+
+
+def _ubx2_flight(ubx2):
+    log = _gps_log("ubx2.bin", ubx2=ubx2)
+    return check_gps(log, airborne_window(log, method="ev"))
+
+
+def test_ubx2_collapse_airborne_is_flagged():
+    sec = _ubx2_flight(lambda t: (0, 0) if 40.0 <= t <= 90.0 else (255, 255))
+    row = dict(zip(_table(sec, "ubx2")["columns"], next(r for r in _table(sec, "ubx2")["rows"] if r[0] == "GPS0")))
+    assert row["before take-off med"] == 255 and row["after landing med"] == 255
+    assert row["airborne med"] < 255 and row["min(magI,magQ)"] == 0
+    assert row["at (s)"] == pytest.approx(40.0, abs=0.1)
+    r = _results(sec)["GPS0 RF front end (UBX2)"]
+    assert r.status == "FAIL" and r.evidence["value"] == pytest.approx(52.4, abs=1.0), r
+
+
+def test_ubx2_steady_passes():
+    r = _results(_ubx2_flight(lambda t: (255, 255)))["GPS0 RF front end (UBX2)"]
+    assert r.status == "PASS" and r.evidence["value"] == 0, r
+
+
+def test_ubx2_without_ground_reference_is_skip():
+    sec = _ubx2_flight(lambda t: (255, 255) if 10.0 <= t <= 110.0 else None)
+    r = _results(sec)["GPS0 RF front end (UBX2)"]
+    assert r.status == "SKIP" and "no on-ground UBX2" in r.summary, r
+    assert any(row[0] == "GPS0" for row in _table(sec, "ubx2")["rows"])
+
+
+def test_ubx2_identity_note_is_kept():
+    sec = _ubx2_flight(lambda t: (255, 255))
+    assert "emitted only by the u-blox driver" in _notes(sec)
 
 
 # ------------------------------------------------------------ issue #6

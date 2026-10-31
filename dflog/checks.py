@@ -133,6 +133,8 @@ T = {
     "gps_sacc":       _t(0.5, 1.0, f"{EKF3_GPS} (fail); {MEAS} (warn)", "GPA.SAcc median over 3D-fix samples, m/s"),
     "gps_vel_glitch_pct": _t(5.0, 15.0, MEAS, "worst 30 s bin after the first 60 s: percent of 3D-fix samples "
                                               "with horizontal |vGPS - vEKF| > 0.5 m/s"),
+    "gps_ubx2_low_pct": _t(5.0, 25.0, MEAS, "percent of airborne UBX2 samples with min(magI, magQ) below "
+                                            "0.8 x the on-ground median"),
 
     # --- power / CPU -----------------------------------------------------
     "vcc_min":        _t(4.7, 4.6, LA, "POWR.Vcc volts, low side"),

@@ -1567,12 +1567,7 @@ def check_gps(log, w):
             sec.add(Result("GPS glitch (ERR)", FAIL, f"{len(gl)} GPS_GLITCH error record(s)",
                            evidence=dict(n=len(gl), t=[float(x) for x in gl["t"].values[:10]]),
                            source="LogAnalyzer TestGPSGlitch (ERR Subsys 11 ECode 2)"))
-    if log.has("UBX2"):
-        ub = log.instances("UBX2")
-        sec.note("UBX2 present for instance(s) " + ", ".join(str(k) for k in sorted(ub)) +
-                 " - UBX2 is emitted only by the u-blox driver, so this identifies which physical\n"
-                 "unit each GPS instance is. Never infer that from the instance index: the mapping\n"
-                 "depends on SERIAL port order and can change between param snapshots.")
+    _gps_ubx2(log, w, sec)
     if len(gps) > 1:
         sec.note("With two GPS units, the differential is the diagnostic. Both degraded similarly\n"
                  "implicates a shared external emitter; one much worse than the other implicates that\n"
@@ -1655,6 +1650,7 @@ GPS_SETTLE_S = 60.0           # glitches in the first 60 s after take-off are ac
 GPS_BIN_S = 30.0
 GPS_BIN_MIN_S = 10.0          # a trailing partial bin is kept only if it spans at least this long
 GPS_DEFAULT_LAG_S = 0.2       # AP_GPS_Backend::get_lag() default, used when no GPS delay parameter is set
+UBX2_LOW_FRAC = 0.8           # a UBX2 sample is low when min(magI, magQ) < this x the on-ground reference
 
 
 def _time_bins(w, t):
@@ -1746,6 +1742,85 @@ def _gps_velocity(log, w, gps, params, sec):
                            f"core {e['core']}" if e["core_from"] == "XKF4.PI" else e["core_from"], lagtxt),
             n_over=int(bad.sum()), n_late=int((bad & late).sum()), max=float(e["err"][k]),
             t_max=float(e["t"][k]), worst_bin=[b0, b1], core=e["core"], lag_s=e["lag_s"]))
+    return out
+
+
+def _ubx2_mags(log, i):
+    """(t, ofsI, magI, ofsQ, magQ) arrays for UBX2 instance i, or None. Columns are
+    resolved with log.column so a spelling drift raises the named KeyError."""
+    u = log.instances("UBX2").get(i)
+    if u is None or u.empty:
+        return None
+    cols = [log.column("UBX2", n) or n for n in ("ofsI", "magI", "ofsQ", "magQ")]
+    return (u["t"].values, *(u[c].values.astype(float) for c in cols))
+
+
+def _ubx2_low(log, w, i):
+    """Airborne UBX2 samples of instance i that sit below UBX2_LOW_FRAC x the on-ground
+    reference (issue #14). `ref` is the median of min(magI, magQ) over samples before
+    w.t0 and after w.t1. Returns dict(t, low, ref), or None with no UBX2 or no on-ground
+    sample to reference."""
+    m = _ubx2_mags(log, i)
+    if m is None:
+        return None
+    t, _, mi, _, mq = m
+    lo = np.minimum(mi, mq)
+    ground = (t < w.t0) | (t > w.t1)
+    if not ground.any():
+        return None
+    ref = float(np.nanmedian(lo[ground]))
+    air = (t >= w.t0) & (t <= w.t1)
+    return dict(t=t[air], low=lo[air] < UBX2_LOW_FRAC * ref, ref=ref)
+
+
+def _gps_ubx2(log, w, sec):
+    """u-blox RF front-end health from UBX2 (MON-HW2 I/Q magnitude and offset), issue #14.
+
+    Healthy units sit pinned near 255. Graded as the percent of airborne samples below
+    UBX2_LOW_FRAC x the on-ground median. UBX2 is logged about every 5 s, so it cannot be
+    lined up glitch by glitch. Returns {instance: _ubx2_low result} where one exists."""
+    out = {}
+    if not log.has("UBX2"):
+        return out
+    rows = []
+    for i in sorted(log.instances("UBX2")):
+        m = _ubx2_mags(log, i)
+        if m is None:
+            continue
+        t, oi, mi, oq, mq = m
+        lo = np.minimum(mi, mq)
+        k = int(np.nanargmin(lo))
+        med = lambda mask: float(np.nanmedian(lo[mask])) if mask.any() else None
+        rng = lambda a: f"{fmt(float(np.nanmin(a)))}..{fmt(float(np.nanmax(a)))}"
+        low = _ubx2_low(log, w, i)
+        if low is not None:
+            out[i] = low
+        rows.append([f"GPS{i}", int(len(t)), float(np.nanmin(mi)), float(np.nanmedian(mi)),
+                     float(np.nanmin(mq)), float(np.nanmedian(mq)), rng(oi), rng(oq),
+                     float(lo[k]), float(t[k]), med(t < w.t0),
+                     med((t >= w.t0) & (t <= w.t1)), med(t > w.t1),
+                     100.0 * float(low["low"].mean()) if low is not None and len(low["low"]) else None])
+        name = f"GPS{i} RF front end (UBX2)"
+        if low is None:
+            sec.add(Result(name, SKIP, "no on-ground UBX2 to reference"))
+        elif not len(low["low"]):
+            sec.add(Result(name, SKIP, "no airborne UBX2 samples"))
+        else:
+            pct = 100.0 * float(low["low"].mean())
+            sec.add(_grade(pct, "gps_ubx2_low_pct", name=name,
+                           summary_fmt=("{v}%% of %d airborne UBX2 samples below %g x the on-ground median "
+                                        "%s (warn {w}, fail {f})")
+                                       % (len(low["low"]), UBX2_LOW_FRAC, fmt(low["ref"])),
+                           n=int(len(low["low"])), n_low=int(low["low"].sum()), ref=low["ref"]))
+    sec.table("ubx2", ["gps", "n", "magI min", "magI med", "magQ min", "magQ med", "ofsI range",
+                       "ofsQ range", "min(magI,magQ)", "at (s)", "before take-off med",
+                       "airborne med", "after landing med", "airborne low %"], rows)
+    sec.note("UBX2 present for instance(s) " + ", ".join(str(k) for k in sorted(log.instances("UBX2"))) +
+             " - UBX2 is emitted only by the u-blox driver, so this identifies which physical\n"
+             "unit each GPS instance is. Never infer that from the instance index: the mapping\n"
+             "depends on SERIAL port order and can change between param snapshots.")
+    sec.note("UBX2 is u-blox MON-HW2 I/Q magnitude and offset; healthy units sit pinned near 255. "
+             "It is logged about every 5 s, so it cannot be lined up glitch by glitch.")
     return out
 
 
