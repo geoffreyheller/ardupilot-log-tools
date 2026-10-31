@@ -378,7 +378,10 @@ result named `refused` — never a pass — and the exit code is unaffected.
    outside the coherent band on an unidentified high-frequency lag, or when the plant fit
    residual is ≥ 3 dB (the in-band measured margin is still quoted; read that instead). A
    fit that fails the residual gate also sets no margin ceilings ("margin ceilings not
-   applied"). Tier B is used only when the band
+   applied"). A rejected fit's row in the `margins` table is labelled
+   `fit x C(z), REJECTED: <reason>` (numbers kept as evidence), its notes say so, and the
+   JSON carries the reason in `margins.fit_rejected` (`null` when the fit was used). Tier B
+   is used only when the band
    contains the crossover and the fit residual is below 3 dB; the note says when it was
    not, and why.
 7. **`autotune`** — per session and axis: the completed steps, the twitch outcomes
