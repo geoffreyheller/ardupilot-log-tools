@@ -1581,6 +1581,16 @@ def check_gps(log, w):
 _GPA_SATURATED = 655.0        # GPA.VDop is a uint16 x 0.01: 655.35 means "not supplied"
 
 
+def _gpa_fix(aa, g):
+    """The GPA rows `aa` that have a 3D fix: the same instance's GPS.Status interpolated
+    onto the GPA times, kept at >= 2.5. With no GPS status to interpolate, all rows."""
+    if g is not None and not g.empty and "Status" in g.columns and len(g) > 1:
+        status = np.interp(aa["t"].values, g["t"].values, g["Status"].values.astype(float))
+    else:
+        status = np.full(len(aa), 3.0)
+    return aa[status >= 2.5]
+
+
 def _gps_accuracy(log, w, gps, sec):
     """The receiver's own accuracy estimates from GPA (issue #5).
 
@@ -1604,11 +1614,7 @@ def _gps_accuracy(log, w, gps, sec):
         if aa is None or aa.empty:
             continue
         g = gps.get(i)
-        if g is not None and not g.empty and "Status" in g.columns and len(g) > 1:
-            status = np.interp(aa["t"].values, g["t"].values, g["Status"].values.astype(float))
-        else:
-            status = np.full(len(aa), 3.0)
-        fix = aa[status >= 2.5]
+        fix = _gpa_fix(aa, g)
         delta = int(round(float(np.nanmedian(aa["Delta"])))) if "Delta" in aa.columns and len(aa) else None
         if delta:
             rates.append(f"GPS{i} fix interval median {delta} ms ({1000.0 / delta:.1f} Hz)")
@@ -1767,6 +1773,10 @@ def _gps_bins(log, w, gps, vel, ubx, sec):
     sample reports None, not 0 %: UBX2 is logged about every 5 s."""
     gpa = log.instances("GPA")
     any_bins = False
+
+    def in_bin(t, b0, b1):
+        return (t >= b0) & ((t <= b1) if b1 >= w.t1 else (t < b1))
+
     for i, g in sorted(gps.items()):
         gg = w.clip(g)
         if gg is None or gg.empty or "Status" not in gg.columns:
@@ -1775,9 +1785,8 @@ def _gps_bins(log, w, gps, vel, ubx, sec):
         if gg.empty:
             continue
         aa = w.clip(gpa.get(i))
-        if aa is not None and not aa.empty and "Status" not in aa.columns and "Status" in g.columns                 and len(g) > 1:
-            st = np.interp(aa["t"].values, g["t"].values, g["Status"].values.astype(float))
-            aa = aa[st >= 2.5]
+        if aa is not None and not aa.empty:
+            aa = _gpa_fix(aa, g)
         v = vel.get(i)
         u = ubx.get(i)
         has_err = v is not None and len(v["t"]) > 0
@@ -1786,7 +1795,7 @@ def _gps_bins(log, w, gps, vel, ubx, sec):
             sats = gg["NSats"].values[m] if "NSats" in gg.columns else np.array([])
             hacc = sacc = np.array([])
             if aa is not None and not aa.empty:
-                am = (aa["t"].values >= b0) & ((aa["t"].values <= b1) if b1 >= w.t1 else (aa["t"].values < b1))
+                am = in_bin(aa["t"].values, b0, b1)
                 if "HAcc" in aa.columns:
                     hv = aa["HAcc"].values[am]
                     hacc = hv[hv > 0]
@@ -1795,11 +1804,11 @@ def _gps_bins(log, w, gps, vel, ubx, sec):
                     sacc = sv[(aa["HAcc"].values[am] > 0)] if "HAcc" in aa.columns else sv
             glitches = None
             if has_err:
-                vm = (v["t"] >= b0) & ((v["t"] <= b1) if b1 >= w.t1 else (v["t"] < b1))
+                vm = in_bin(v["t"], b0, b1)
                 glitches = int((v["err"][vm] > GPS_VEL_GLITCH).sum())
             low = None
             if u is not None and len(u["t"]):
-                um = (u["t"] >= b0) & ((u["t"] <= b1) if b1 >= w.t1 else (u["t"] < b1))
+                um = in_bin(u["t"], b0, b1)
                 if um.any():
                     low = 100.0 * float(u["low"][um].mean())
             rows.append([b0 - w.t0, b1 - w.t0, int(m.sum()),

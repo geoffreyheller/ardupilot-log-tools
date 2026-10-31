@@ -156,7 +156,7 @@ def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temp
 
 
 def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=(0.0, 0.0),
-             ekf=(0.0, 0.0), ekf1=None, pi=None, params=None, ubx2=None):
+             ekf=(0.0, 0.0), ekf1=None, pi=None, params=None, ubx2=None, nofix=()):
     """Two receivers: instance 0 with a 3D fix (accuracies as given, with `spikes` =
     [(t0, t1, hacc)] where HAcc jumps), instance 1 an NMEA unit that never gets a fix
     and reports HAcc 0 and the saturated VDop 655.35.
@@ -164,7 +164,7 @@ def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=
     `vel` is GPS0's (Spd, GCrs), `ekf` the XKF1 core 0 (VN, VE) written at 10 Hz (False
     omits XKF1), `ekf1` a second core 1 when given, `pi` an XKF4.PI written for both
     cores when given. Each of those takes a constant tuple or a callable of t.
-    `params` are written as PARM records. `ubx2` is a callable of t returning (magI, magQ)
+    `nofix=[(t0, t1)]` drops GPS0 to Status 1 in those spans. `params` are written as PARM records. `ubx2` is a callable of t returning (magI, magQ)
     or (ofsI, magI, ofsQ, magQ), or None for no record; written as UBX2 instance 0 every
     5 s from t = 0.
     """
@@ -178,7 +178,7 @@ def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=
         us = int(t * 1e6)
         h = next((h for a, b, h in spikes if a <= t <= b), hacc0)
         spd, crs = at(vel, t)
-        w.msg("GPS", TimeUS=us, I=0, Status=3, NSats=12, HDop=0.8, Lat=30.0 + t * 1e-6, Lng=-140.0,
+        w.msg("GPS", TimeUS=us, I=0, Status=1 if any(a <= t <= b for a, b in nofix) else 3, NSats=12, HDop=0.8, Lat=30.0 + t * 1e-6, Lng=-140.0,
               Alt=100.0, GMS=int(t * 1000), GWk=2400, Spd=spd, GCrs=crs)
         w.msg("GPA", TimeUS=us, I=0, VDop=1.1, HAcc=h, VAcc=vacc0, SAcc=sacc0, Delta=200)
         if ubx2 is not None and i % int(5 * HZ) == 0:
@@ -433,6 +433,16 @@ def test_gps_bins_are_timed_from_takeoff():
     assert [r["UBX2 low %"] for r in rows] == [None, None, 100.0, None]
 
 
+def test_gps_bins_exclude_samples_without_a_fix():
+    log = _gps_log("bins_nofix.bin", spikes=[(45.0, 54.95, 9.0)], nofix=[(45.0, 54.95)])
+    sec = check_gps(log, airborne_window(log, method="ev"))
+    rows = _rows(sec, "gps0_bins")
+    assert rows[1]["from (s)"] == 30
+    assert rows[1]["HAcc med (m)"] == pytest.approx(0.8, abs=1e-6), rows[1]
+    full = _rows(_bins_flight(), "gps0_bins")[1]["n"]
+    assert rows[1]["n"] < full, (rows[1], full)
+
+
 def test_gps_takeoff_conditions():
     rows = {r["gps"]: r for r in _rows(_bins_flight(), "gps_takeoff")}
     g0, g1 = rows["GPS0"], rows["GPS1"]
@@ -447,7 +457,7 @@ def test_gps_takeoff_follows_the_analysed_flight():
     rows = {r["gps"]: r for r in _rows(sec, "gps_takeoff")}
     assert rows["GPS0"]["take-off (s from log start)"] == pytest.approx(40.0, abs=0.2)
     assert _rows(sec, "gps0_bins")[0]["from (s)"] == 0
-    assert "40" in _notes(sec)
+    assert "timed from take-off (40.0 s since boot)" in _notes(sec), _notes(sec)
 
 
 def test_gps_takeoff_not_reported_without_takeoff():
