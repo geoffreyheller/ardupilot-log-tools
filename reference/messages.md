@@ -150,7 +150,7 @@ the actual numbers (`xy diff:127>100`, or `1181, max 875, min 185`).
 |---|---|---|
 | `GPS` | `I Status GMS GWk NSats HDop Lat Lng Alt Spd GCrs VZ Yaw U` | `Status` ≥3 is a 3D fix; 4 = SBAS/DGPS. `GCrs` is ground course. |
 | `GPA` | `I VDop HAcc VAcc SAcc YAcc VV SMS Delta AEl RTCMFU RTCMFD` | the receiver's own accuracy estimates: `HAcc`/`VAcc` m, `SAcc` m/s; `Delta` is the fix interval in ms (200 = 5 Hz). `VDop` is uint16 × 0.01, so 655.35 is "not supplied"; an NMEA unit reports `HAcc` 0 - an absence, not an accuracy. The `gps` check grades all three. |
-| `UBX2` | `Instance ofsI magI ofsQ magQ` | u-blox MON-HW2 RF front-end I/Q offset and magnitude, ~0.2 Hz; **emitted only by the u-blox driver**. Healthy units sit near 255; the `gps` check grades the airborne share below 0.8 x the on-ground median. |
+| `UBX2` | `Instance ofsI magI ofsQ magQ` | u-blox MON-HW2 RF front-end I/Q offset and magnitude, ~0.2 Hz; **emitted only by the u-blox driver**. The magnitude level depends on the unit and its AGC, so there is no universal healthy value; the `gps` check grades the airborne share below 0.8 x the unit's own on-ground median (ground time outside every flight in the log). |
 
 **Identify which physical GPS an instance is by `UBX2`, never by the instance index.**
 Which unit lands in slot 0 depends on SERIAL port order and can change between param
