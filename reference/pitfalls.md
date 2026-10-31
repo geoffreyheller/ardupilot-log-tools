@@ -73,7 +73,7 @@ against a 33 s one under a sentence saying they were comparable, and a motor-hea
 flipped to FAIL on the window choice alone (issue #4).
 
 **Run both flights through identical code.** Recomputing an old number with the new script
-is cheaper than reconciling two methods later. `alog.py compare` exists for this.
+is cheaper than reconciling two methods later. `alog compare` exists for this.
 
 **A statistic from a dynamic flight is not comparable with one from a hover.** In one
 before/after pair, attitude-error standard deviations rose ~19 % while p95 values
