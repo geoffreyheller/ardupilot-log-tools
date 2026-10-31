@@ -16,6 +16,8 @@
     alog params    flight.bin --diff snapshot.param
     alog files     flight.bin --out ./embedded
     alog schema                            # the JSON output contract
+    alog docs                              # the guide, rules, recipes and references
+    alog docs pitfalls                     # one of them, matching this version
 
 Output is markdown by default, JSON with --json. Exit codes: 0 pass, 1 warn, 2 fail,
 3 the input could not be analysed (missing file, not a dataflash log, unknown check,
@@ -959,11 +961,36 @@ def cmd_schema(args):
              "log_name, requirements}]), logging_requirements (one list per log), logs and identity, "
              "exit_code 3. Confidence thresholds are `thresholds.tune_*`; algorithm constants are "
              "`tune_constants`",
+        docs="`docs` has no `log`: where (installed|repository) and topics ([{topic, title}]); "
+             "`docs TOPIC` adds topic and text (the markdown verbatim). Unknown topic: exit 3",
         thresholds={k: dict(warn=v["warn"], fail=v["fail"], source=v["source"], note=v["note"]) for k, v in T.items()},
         tune_constants={k: dict(value=v["value"], source=v["source"], note=v.get("note", ""))
                         for k, v in all_constants().items()},
     )
     _emit_json(_finite(schema))
+    return 0
+
+
+def cmd_docs(args):
+    from . import docs
+    found, where = docs.topics()
+    if args.topic is None:
+        rows = [[t, docs.title(p)] for t, p in sorted(found.items())]
+        if args.json:
+            _emit_json(_envelope("docs", where=where, topics=[dict(topic=t, title=x) for t, x in rows]))
+            return 0
+        print(f"Documentation for ardupilot-log-tools {__version__} ({where} copy). "
+              "`alog docs TOPIC` prints one.\n")
+        print(table(["topic", "title"], rows, align=["l", "l"]))
+        return 0
+    try:
+        text = docs.read(args.topic)
+    except KeyError as exc:
+        raise InputError(exc.args[0])
+    if args.json:
+        _emit_json(_envelope("docs", where=where, topic=args.topic, text=text))
+    else:
+        sys.stdout.write(text)
     return 0
 
 
@@ -1083,6 +1110,9 @@ def main(argv=None):
     q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     q = sub.add_parser("schema", help="print the JSON output contract, check names and thresholds")
     q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
+    q = sub.add_parser("docs", help="the guide, rules, recipes and references, as shipped with this version")
+    q.add_argument("topic", nargs="?", help="a topic from the list `alog docs` prints, e.g. pitfalls")
+    q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
 
     args = ap.parse_args(argv)
     # --json may be given before or after the subcommand
@@ -1100,7 +1130,8 @@ def main(argv=None):
 
     dispatch = {"info": cmd_info, "integrity": cmd_integrity, "types": cmd_types, "fields": cmd_fields,
                 "dump": cmd_dump, "params": cmd_params, "compare": cmd_compare, "fft": cmd_fft,
-                "files": cmd_files, "schema": cmd_schema, "hover": cmd_hover, "tune": cmd_tune}
+                "files": cmd_files, "schema": cmd_schema, "hover": cmd_hover, "tune": cmd_tune,
+                "docs": cmd_docs}
     try:
         if args.cmd in dispatch:
             return dispatch[args.cmd](args)

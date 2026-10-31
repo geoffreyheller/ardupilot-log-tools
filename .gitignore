@@ -29,3 +29,6 @@ dist/
 # local agent worktrees and SDD scratch
 .worktrees/
 .superpowers/
+
+# Docs copied into the package by setup.py at build time (never committed)
+dflog/docs/

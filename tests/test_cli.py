@@ -249,6 +249,37 @@ def test_schema_lists_checks_and_thresholds_with_sources():
     assert "3" in doc["exit_codes"] or 3 in doc["exit_codes"]
 
 
+def test_docs_lists_every_canonical_file_and_prints_each_one():
+    from dflog import docs
+    code, doc = run_json("docs")
+    assert code == 0 and doc["command"] == "docs" and doc["where"] in ("installed", "repository")
+    listed = {t["topic"] for t in doc["topics"]}
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    want = {"rules", "guide", "skills", "report-template"} | {
+        os.path.splitext(f)[0] for f in os.listdir(os.path.join(root, "reference")) if f.endswith(".md")}
+    assert listed == want, listed ^ want
+    for topic in sorted(listed):
+        code, out, _ = run("docs", topic)
+        assert code == 0 and out == docs.read(topic) and out.startswith("#"), topic
+
+
+def test_docs_unknown_topic_is_exit_3_naming_the_topics():
+    code, out, err = run("docs", "no-such-topic")
+    assert code == 3 and "no-such-topic" in err and "pitfalls" in err
+    code, doc = run_json("docs", "no-such-topic")
+    assert code == 3 and doc["exit_code"] == 3 and "pitfalls" in doc["error"]
+
+
+def test_docs_build_fails_loudly_on_a_missing_source():
+    from dflog import docs
+    try:
+        docs.sources(tempfile.mkdtemp(prefix="dflog-nodocs-"))
+    except FileNotFoundError as exc:
+        assert "RULES.md" in str(exc), exc
+    else:
+        raise AssertionError("sources() accepted a tree with no documentation")
+
+
 def test_fft_refuses_when_no_signal_and_says_what_exists():
     code, out, err = run("fft", GOOD)
     assert code == 3 and "FFT refused" in err
