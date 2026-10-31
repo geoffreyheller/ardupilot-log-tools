@@ -37,7 +37,9 @@ where it fails rather than a turn later.
 rebuild.
 
 **Delete `.dfcache` files when you are done.** They are large, and disk space next to a
-log directory is usually tighter than expected.
+log directory is usually tighter than expected. `--cache-dir DIR` (or `ALOG_CACHE_DIR`)
+keeps them out of the log folder entirely; each name carries a hash of the log's absolute
+path, so two `00000042.BIN` from different cards never share one.
 
 ---
 

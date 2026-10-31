@@ -386,6 +386,34 @@ def test_cache_is_not_written_for_a_failed_parse_and_is_rebuilt_when_stale():
     assert CACHE_VERSION >= 4
 
 
+def test_cache_dir_keeps_caches_out_of_the_log_folder_and_apart_by_path():
+    # Two logs with the same file name in different folders (two SD cards) must not share a
+    # cache, and nothing may be written beside either log.
+    cards = [os.path.join(TMP, "card-a"), os.path.join(TMP, "card-b")]
+    caches = os.path.join(TMP, "caches")
+    paths = []
+    for n, card in zip((150, 200), cards):
+        os.makedirs(card, exist_ok=True)
+        paths.append(standard_log(n=n).write(os.path.join(card, "00000042.BIN")))
+    first = [Log(p, cache_dir=caches).n_messages for p in paths]
+    assert first[0] != first[1]
+    assert len(os.listdir(caches)) == 2
+    assert all(f.startswith("00000042.BIN-") and f.endswith(".dfcache") for f in os.listdir(caches))
+    assert not any(f.endswith(".dfcache") for card in cards for f in os.listdir(card))
+    # second load reads the cache, not the file: each log gets its own back
+    again = [Log(p, cache_dir=caches) for p in paths]
+    assert [g.n_messages for g in again] == first
+    assert not any(g.diagnostics.has("CACHE_REBUILT") for g in again)
+    # ALOG_CACHE_DIR does the same without the argument
+    env_dir = os.path.join(TMP, "env-caches")
+    os.environ["ALOG_CACHE_DIR"] = env_dir
+    try:
+        Log(paths[0])
+    finally:
+        del os.environ["ALOG_CACHE_DIR"]
+    assert len(os.listdir(env_dir)) == 1 and not any(f.endswith(".dfcache") for f in os.listdir(cards[0]))
+
+
 def test_text_log_export_is_read_and_flagged():
     text = (
         "FMT, 128, 89, FMT, BBnNZ, Type,Length,Name,Format,Columns\n"

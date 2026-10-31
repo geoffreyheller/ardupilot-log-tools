@@ -38,7 +38,10 @@ the input could not be analysed.
 log) and tells you three things nothing else should surprise you about afterwards: what
 the log is (firmware, board, UTC time), whether it is intact (the integrity diagnostics),
 and what was logged at what rate (so you know before you start that a 25 Hz IMU stream
-cannot show a 200 Hz motor). Delete `.dfcache` files when you are done.
+cannot show a 200 Hz motor). Delete `.dfcache` files when you are done. When the log sits
+in a read-only or synced folder (an SD card, OneDrive), `--cache-dir DIR` or the
+`ALOG_CACHE_DIR` environment variable keeps the caches in one place instead; `--cache-dir`
+and `--no-cache` go before the subcommand (`alog --cache-dir DIR info flight.bin`).
 
 In Python:
 

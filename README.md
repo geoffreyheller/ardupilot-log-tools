@@ -266,7 +266,7 @@ tools/make_fixture.py   cut a small, scrubbed test fixture out of a real log (te
 
 `dflog/parser.py` reads the DataFlash format directly via its self-describing `FMT`
 records: about 1 s for a 16 MB log, cached beside the log as `<name>.bin.dfcache` keyed on
-size, mtime and cache version. It decodes by the format string (all 21 characters including
+size, mtime and cache version (or in one directory with `--cache-dir` / `ALOG_CACHE_DIR`). It decodes by the format string (all 21 characters including
 `g` float16), applies format-character scaling (`c C e E L`) and never `MULT`, reassembles
 4.7+ chunked `MSG` text and `FILE` records, splits instances by the FMTU `#` marker with a
 label fallback, and derives UTC from GPS week/ms. What it finds wrong it reports; see

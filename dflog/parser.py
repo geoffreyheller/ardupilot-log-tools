@@ -18,7 +18,10 @@ Typical use:
 
 The parse is fast (about 1 s for a 16 MB log on a laptop). The first parse writes a
 pickle cache beside the log (`<name>.dfcache`); later loads take well under a second.
-Delete the cache or pass `use_cache=False` to force a re-parse.
+Delete the cache or pass `use_cache=False` to force a re-parse. `cache_dir=` (or the
+`ALOG_CACHE_DIR` environment variable) puts caches in one directory instead, for logs in a
+read-only or synced folder; the file name carries a hash of the log's absolute path, so
+two logs with the same name never share one.
 
 Fail-loud contract
 ------------------
@@ -411,8 +414,9 @@ class MessageFormat:
 class Log:
     """A parsed ArduPilot dataflash log."""
 
-    def __init__(self, path, use_cache=True, verbose=False, progress=False, strict=False):
+    def __init__(self, path, use_cache=True, verbose=False, progress=False, strict=False, cache_dir=None):
         self.path = str(path)
+        self.cache_dir = cache_dir or os.environ.get("ALOG_CACHE_DIR") or None
         self.verbose = verbose
         self.formats: dict[int, MessageFormat] = {}
         self.formats_by_name: dict[str, MessageFormat] = {}
@@ -461,7 +465,12 @@ class Log:
     # ------------------------------------------------------------------ cache
 
     def _cache_path(self):
-        return self.path + ".dfcache"
+        if not self.cache_dir:
+            return self.path + ".dfcache"
+        # Freshness is checked inside the cache (size, mtime), so the name only has to be
+        # unique per log: two 00000042.BIN on different cards must not share a cache.
+        key = hashlib.sha1(os.path.abspath(self.path).encode("utf-8")).hexdigest()[:12]
+        return os.path.join(self.cache_dir, f"{os.path.basename(self.path)}-{key}.dfcache")
 
     def _save_cache(self, cache):
         blob = dict(
@@ -478,6 +487,8 @@ class Log:
             source_format=self.source_format,
         )
         tmp = cache + ".tmp"
+        if self.cache_dir:
+            os.makedirs(self.cache_dir, exist_ok=True)
         with open(tmp, "wb") as fh:
             pickle.dump(blob, fh, protocol=pickle.HIGHEST_PROTOCOL)
         os.replace(tmp, cache)
