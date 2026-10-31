@@ -47,10 +47,10 @@ __all__ = ["CONSTANTS", "step_response", "step_metrics", "oscillation", "step_ru
 _SRC_PLAN = "docs/pid-tuning-plan.md section 2.4 (oscillation / ceiling)"
 _SRC_PLAN_WP3 = "docs/pid-tuning-plan.md section 5 WP3 (step rules)"
 _SRC_PIDA = ("PID-Analyzer (Plasmatree) Trace.wiener_deconvolution / winstacker; "
-             "reference/pid-tuning-sources.md section 7")
-_SRC_PTB = "PIDtoolbox PTstepcalc.m; reference/pid-tuning-sources.md section 7"
-_SRC_ZN = "Ziegler-Nichols limit-cycle rules; reference/pid-tuning-sources.md section 7.1"
-_SRC_FPV = "fpvpidlab rule set; reference/pid-tuning-sources.md section 7"
+             "`alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 7")
+_SRC_PTB = "PIDtoolbox PTstepcalc.m; `alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 7"
+_SRC_ZN = "Ziegler-Nichols limit-cycle rules; `alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 7.1"
+_SRC_FPV = "fpvpidlab rule set; `alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 7"
 _SRC_MEAS = ("measured on tests/tunesynth.py PLANT_5IN / PLANT_10IN with their AutoTune gains "
              "(WP3 report, 2026-09-17); INS_GYRO_FILTER is the prop-size proxy of the wiki and the "
              "Mission Planner initial-parameter calculator (sources section 6)")
@@ -75,7 +75,7 @@ CONSTANTS = {
     "step_rise_expected_mul": _c(1.6, _SRC_MEAS, "expected 10-90 % rise, s = this / INS_GYRO_FILTER (Hz): "
                                                   "21 ms at 75 Hz (5 in), 38 ms at 42 Hz (10 in), 80 ms at 20 Hz"),
     "quik_pilot_input_delay_s": _c(4.0, "ArduPilot libraries/AP_Scripting/applets/VTOL-quicktune.lua PILOT_INPUT_DELAY; "
-                                        "reference/pid-tuning-sources.md section 4",
+                                        "`alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 4",
                                    "SRate is judged only on samples this long after the last |Tar| >= step_min_target_dps: "
                                    "commanded transients slew the output too, and the SlewLimiter decays with a 1 s attack filter"),
     "osc_srate_min_quiet_s": _c(1.0, _SRC_PLAN, "fewer quiet seconds than this and the SRate test is not evaluated (NaN)"),

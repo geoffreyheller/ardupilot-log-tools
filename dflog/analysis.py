@@ -240,7 +240,7 @@ def check_integrity(log, w):
                   rows, align=["l", "l", "l", "r", "r", "l"])
     else:
         sec.note("No structural or data-quality issues. Every byte of the file was decoded.")
-    sec.note("Codes are documented in reference/integrity-codes.md. Nothing listed here was "
+    sec.note("Codes are documented in `alog docs integrity-codes` (reference/integrity-codes.md). Nothing listed here was "
              "repaired: the numbers in the rest of the report are computed on the data as "
              "logged, gaps and all.")
     return sec

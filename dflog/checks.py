@@ -77,15 +77,15 @@ def _t(warn, fail, source, note=""):
 LA = "ardupilot Tools/LogAnalyzer @ bdea9be7fb~1 (removed from master 2024-08-14)"
 DLA = "dronekit-la (unmaintained since 2022)"
 WIKI = "ardupilot.org wiki"
-MEAS = "measured on the development logs; see reference/thresholds.md"
+MEAS = "measured on the development logs; see `alog docs thresholds` (reference/thresholds.md)"
 EKF3_GPS = "ArduPilot AP_NavEKF3 calcGpsGoodToAlign, EK3_GPS_CHECK limits"
 # Firmware-derived values for the PID tuning checks (dflog/tune.py). The constants
 # themselves are quoted in reference/pid-tuning-sources.md; the plan that chose these
 # gradings is docs/pid-tuning-plan.md section 4.
-AUTOTUNE = "ArduCopter AC_AutoTune_Multi.cpp constants; reference/pid-tuning-sources.md section 1"
-PIDA = "PID-Analyzer (Plasmatree) step-response method; reference/pid-tuning-sources.md section 7"
-QUIK = "ArduPilot VTOL-quicktune.lua defaults; reference/pid-tuning-sources.md section 4"
-ANALYTIC = "ArduPilot AnalyticTune / heli AutoTune margins; reference/pid-tuning-sources.md section 5"
+AUTOTUNE = "ArduCopter AC_AutoTune_Multi.cpp constants; `alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 1"
+PIDA = "PID-Analyzer (Plasmatree) step-response method; `alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 7"
+QUIK = "ArduPilot VTOL-quicktune.lua defaults; `alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 4"
+ANALYTIC = "ArduPilot AnalyticTune / heli AutoTune margins; `alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 5"
 PLAN = "docs/pid-tuning-plan.md section 4 (MEAS: chosen for this tool, to be re-measured on fast-logged flights)"
 
 #: Threshold registry. Every check must cite one of these rather than hardcode.
@@ -177,7 +177,7 @@ T = {
     # --- attitude / tune -------------------------------------------------
     "att_err_deg":    _t(5.0, 10.0, DLA, "|actual - desired| roll/pitch in degrees"),
     "rate_corr":      _t(0.6, 0.4, MEAS, "corr(desired rate, actual rate), low side"),
-    "gust_event_rate": _t(0.2, 0.5, MEAS, "unrequested >2.5 deg excursions per second (see reference/thresholds.md)"),
+    "gust_event_rate": _t(0.2, 0.5, MEAS, "unrequested >2.5 deg excursions per second (see `alog docs thresholds` (reference/thresholds.md))"),
     "lean_over_max_deg": _t(0.0, 10.0, LA, "TestPitchRollCoupling: lean angle beyond ANGLE_MAX, deg; "
                                             "LA fails at +10 deg above 2 m"),
 

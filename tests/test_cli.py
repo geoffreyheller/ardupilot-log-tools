@@ -280,6 +280,24 @@ def test_docs_build_fails_loudly_on_a_missing_source():
         raise AssertionError("sources() accepted a tree with no documentation")
 
 
+def test_every_doc_named_in_output_is_an_alog_docs_topic():
+    # An installed user has no reference/ directory: output must name the `alog docs` topic,
+    # and that topic must exist. Scanned over the schema, the battery on the synthetic log
+    # and on the committed fixture (whose tune section is a refusal) in both formats.
+    import re
+    from dflog import docs
+    fixture = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", "largeprop-quad.bin")
+    outputs = [run("--json", "schema")[1], run("all", GOOD)[1], run("--json", "all", GOOD)[1],
+               run("all", fixture)[1], run("--json", "all", fixture)[1], run("--json", "tune", fixture)[1]]
+    text = "\n".join(outputs)
+    topics, _ = docs.topics()
+    named = set(re.findall(r"alog docs ([a-z-]+)", text))
+    assert named and named <= set(topics), named - set(topics)
+    bare = [m.group(0) for m in re.finditer(r"reference/([a-z-]+)\.md", text)
+            if f"alog docs {m.group(1)}` (" + m.group(0) not in text[max(0, m.start() - 60):m.end()]]
+    assert not bare, sorted(set(bare))
+
+
 def test_fft_refuses_when_no_signal_and_says_what_exists():
     code, out, err = run("fft", GOOD)
     assert code == 3 and "FFT refused" in err
