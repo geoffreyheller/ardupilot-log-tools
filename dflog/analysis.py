@@ -351,6 +351,12 @@ VIBE_BAND_MIN_N = 10            # 1 s of VIBE at its 10 Hz log rate
 _VIBE_AXES = (("VibeX", "vibe_xy"), ("VibeY", "vibe_xy"), ("VibeZ", "vibe_z"))
 
 
+def _ends_at_landing(w):
+    """True when the window is a detected flight whose end is the landing: not a hover chunk,
+    an explicit or whole-log window, a mode span, or a flight padded short of touchdown."""
+    return w.index is not None and not w.method.startswith("mode") and "padded" not in w.note
+
+
 def _vibe_bands(log, w, i, g, params, sec):
     """issue #18: one IMU's VIBE p95, max and clips per throttle band; grades the high band.
 
@@ -369,12 +375,16 @@ def _vibe_bands(log, w, i, g, params, sec):
     thh = _hover_throttle(log, w, params)
     hi_edge = max(VIBE_HIGH_THO, thh + 0.10) if np.isfinite(thh) else VIBE_HIGH_THO
     inw = w.mask(t)
-    td = inw & (t >= w.t1 - TOUCHDOWN_S) if w.duration > 2 * TOUCHDOWN_S else np.zeros(t.size, dtype=bool)
+    td = (inw & (t >= w.t1 - TOUCHDOWN_S) if _ends_at_landing(w) and w.duration > 2 * TOUCHDOWN_S
+          else np.zeros(t.size, dtype=bool))
     hover = (inw & ~td & (np.abs(tho - thh) <= 0.04) if np.isfinite(thh)
              else np.zeros(t.size, dtype=bool))
-    bands = [("idle", "<= 0.05, armed on the ground", ~inw & ~motors_stopped(log, t, params) & (tho <= 0.05)),
-             ("hover", f"{thh - 0.04:.2f}-{thh + 0.04:.2f}" if np.isfinite(thh) else "no hover throttle known",
-              hover),
+    # outside a hover chunk or an explicit window is mostly flight, not ground idle
+    idle = (~inw & ~motors_stopped(log, t, params) & (tho <= 0.05) if _ends_at_landing(w)
+            else np.zeros(t.size, dtype=bool))
+    bands = [("idle", "<= 0.05, armed on the ground", idle),
+             ("hover", f"{thh - 0.04:.2f}-{thh + 0.04:.2f} (ThH {thh:.3f})" if np.isfinite(thh)
+              else "no hover throttle known", hover),
              ("high", f">= {hi_edge:.2f}", inw & ~td & (tho >= hi_edge)),
              ("touchdown", f"last {TOUCHDOWN_S:.0f} s of the window", td)]
     clips = (np.r_[0.0, np.clip(np.diff(g["Clip"].values.astype(float)), 0, None)]
@@ -436,11 +446,17 @@ def check_vibration(log, w):
              "saturated and the EKF was fed garbage for those samples.")
     if band_rows is None:
         sec.note("Throttle bands need CTUN.ThO; not logged, so only whole-window figures are given.")
+    elif not band_rows:
+        sec.note(f"No throttle band reached {VIBE_BAND_MIN_N} VIBE samples in this window, so only "
+                 "whole-window figures are given.")
     else:
         sec.note("Throttle bands (vibe_bands): the whole-window p95 is mostly hover, so punch-out\n"
                  "vibration shows only in the high band - compare its p95 between flights, not the\n"
                  f"whole-window max. A band needs {VIBE_BAND_MIN_N} samples to be listed; touchdown\n"
-                 "takes precedence over hover and high.")
+                 "takes precedence over hover and high."
+                 + ("" if _ends_at_landing(w) else
+                    f"\nNo idle or touchdown band: this window ({w.method}) does not end at a detected\n"
+                    "landing, so neither its last seconds nor the time outside it are ground time."))
     params.note(sec)
     return sec
 

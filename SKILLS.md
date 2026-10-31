@@ -176,7 +176,8 @@ python alog.py spectrum flight.bin --window rpm       # the same, as a report se
 - **Banded by throttle** (`vibe_bands` table, run without `--window hover`): p95, max and
   clips per band, per IMU. *idle* — armed on the ground, `CTUN.ThO` ≤ 0.05; *hover* —
   `|ThO − ThH|` ≤ 0.04; *high* — `ThO` ≥ max(0.60, ThH + 0.10); *touchdown* — the last 3 s
-  of the window, which takes precedence. A band needs 10 samples to be listed. The high
+  of a detected flight, which takes precedence. Idle and touchdown are not formed on a
+  hover, explicit, mode or padded window, and the section says so. A band needs 10 samples to be listed. The high
   band is graded on its own (`IMU0 VibeX p95 (high throttle)`): it is the punch-out
   baseline to compare between flights. A whole-window max with no matching high-band max
   is a one-off (look at touchdown), not every full-throttle burst. No `CTUN` → no bands,

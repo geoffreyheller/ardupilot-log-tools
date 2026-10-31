@@ -22,6 +22,7 @@ except ImportError:
     import _shim as pytest
 
 from dflog import Log, airborne_window                                   # noqa: E402
+from dflog.flight import Window                                          # noqa: E402
 from dflog.analysis import check_gps, check_motors, check_notch, check_power   # noqa: E402
 from dflog.analysis import check_vibration                                      # noqa: E402
 from dflog.analysis import _Params, _hover_throttle, _throttle_at               # noqa: E402
@@ -796,6 +797,43 @@ def test_vibe_bands_per_imu():
     assert (0, "high") in rows and (1, "high") in rows
     rs = _results(sec)
     assert "IMU0 VibeX p95 (high throttle)" in rs and "IMU1 VibeX p95 (high throttle)" in rs
+
+
+def test_touchdown_band_needs_a_window_ending_at_a_landing():
+    """A hover chunk, an explicit window or a padded flight does not end at a landing, so
+    its last 3 s are not touchdown and stay in the hover band."""
+    log = _punch_log("vibe_hover_window.bin")
+    for win in (Window(30.0, 60.0, "hover chunk 1 of 1: test"), Window(30.0, 60.0, "explicit 30:60 s"),
+                airborne_window(log, method="ev", pad=2.0)):
+        sec = check_vibration(log, win)
+        rows = _vibe_rows(sec)
+        assert (0, "touchdown") not in rows, (win.method, rows)
+        assert "does not end at a detected\nlanding" in _notes(sec), win.method
+    rows = _vibe_rows(check_vibration(log, Window(30.0, 60.0, "hover chunk 1 of 1: test")))
+    assert rows[(0, "hover")]["n"] == 301
+    # outside a hover chunk is mostly flight, so idle is not "armed on the ground" either
+    assert (0, "idle") not in rows, rows
+
+
+def test_hover_band_label_names_the_hover_throttle():
+    log = _punch_log("vibe_thh_label.bin")
+    rows = _vibe_rows(check_vibration(log, airborne_window(log, method="ev")))
+    assert "ThH 0.400" in rows[(0, "hover")]["ThO band"]
+
+
+def test_no_band_with_enough_samples_says_so():
+    """CTUN is logged but no band reaches 10 VIBE samples: no table, and a note saying why
+    rather than one that points at a missing table."""
+    w = _writer()
+    for i in range(int(SPAN * HZ)):
+        us = int(i / HZ * 1e6)
+        w.msg("CTUN", TimeUS=us, ThO=0.4, ThH=0.4, BAlt=5.0)
+        w.msg("VIBE", TimeUS=us, IMU=0, VibeX=5.0, VibeY=5.0, VibeZ=5.0, Clip=0)
+    log = _load(w, "vibe_short.bin")
+    sec = check_vibration(log, Window(50.0, 50.5, "explicit 50:50.5 s"))
+    assert not any(t["name"] == "vibe_bands" for t in sec.tables)
+    text = _notes(sec)
+    assert "No throttle band reached 10 VIBE samples" in text and "vibe_bands)" not in text, text
 
 
 if __name__ == "__main__":
