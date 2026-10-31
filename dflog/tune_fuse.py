@@ -139,6 +139,20 @@ def _fc(name):
     return FUSE_CONSTANTS[name]["value"]
 
 
+def _fit_rejected(plant):
+    """Why a plant fit may not be used for margins, or None when it may.
+
+    The same gate as tier B (`fuse_tier_b_fit_rms_db_max`): a fit too poor to set gains is
+    too poor to grade margins, set margin ceilings or decide that the current loop misses
+    them (issue #16)."""
+    if not isinstance(plant, PlantModel):
+        return "no identified plant"
+    rms_max = float(_fc("fuse_tier_b_fit_rms_db_max"))
+    if not _fin(plant.fit_rms_db) or plant.fit_rms_db >= rms_max:
+        return f"plant fit residual {_fmt(plant.fit_rms_db, 3)} dB >= {rms_max:g} dB"
+    return None
+
+
 def _fin(x):
     try:
         return x is not None and math.isfinite(float(x))
@@ -708,7 +722,7 @@ def fuse(per_axis, current_gains, autotune_axes=None, prop_in=None):
         # correction (pitch 0.135 -> 0.129, -4.6 %, took PM 43.1 -> 46.2 deg on Brisket)
         dead = float(_fc("fuse_deadband_pct"))
         cur_m = entry.get("margins") or {}
-        cur_fails = (isinstance(entry.get("plant"), PlantModel) and cur_m.get("pm_deg") is not None
+        cur_fails = (_fit_rejected(entry.get("plant")) is None and cur_m.get("pm_deg") is not None
                      and not tune_ident.meets_margins(cur_m))
         for field, f in fused.items():
             if f["method"] == "unchanged" or f["conf"] < fail_c or f.get("withhold"):
@@ -731,7 +745,11 @@ def fuse(per_axis, current_gains, autotune_axes=None, prop_in=None):
         gated = ("rat_p", "rat_i", "rat_d", "flte")
         rate_fields = [f for f in gated if f in fused and fused[f]["conf"] >= fail_c and fused[f]["method"] != "unchanged"]
         plant = entry.get("plant")
-        if rate_fields and isinstance(plant, PlantModel):
+        rejected = _fit_rejected(plant) if isinstance(plant, PlantModel) else None
+        if rate_fields and rejected:
+            for f in rate_fields:
+                fused[f]["notes"].append(f"margins of the rate set as applied not checked: {rejected}")
+        if rate_fields and isinstance(plant, PlantModel) and not rejected:
             applied = {f: float(fused[f]["value"]) if f in fused and fused[f]["conf"] >= fail_c
                        else float(getattr(cur, f) or 0.0) for f in gated}
             m = tune_ident.margins(plant, dataclasses.replace(cur, **applied))
@@ -1066,9 +1084,13 @@ def analyse(logs, windows, axes=AXES, prop_in=None, aggr=None, log_names=None):
                     done = bool(va.get("complete"))
                     d_for_p = va.get("rat_d") if done and _fin(va.get("rat_d")) else None
                     p_for_d = va.get("rat_p") if done and _fin(va.get("rat_p")) else None
-                    mcs, mnotes = tune_ident.margin_ceilings(pm, current, d_for_p=d_for_p, p_for_d=p_for_d)
-                    entry["ceilings"].extend(mcs)
-                    entry["notes"].extend(mnotes)
+                    rejected = _fit_rejected(pm)
+                    if rejected:
+                        entry["notes"].append(f"margin ceilings not applied: {rejected}")
+                    else:
+                        mcs, mnotes = tune_ident.margin_ceilings(pm, current, d_for_p=d_for_p, p_for_d=p_for_d)
+                        entry["ceilings"].extend(mcs)
+                        entry["notes"].extend(mnotes)
                     heli = tune_ident.ceilings_from_plant(pm, current)
                     if heli:
                         entry["notes"].append(
@@ -1294,8 +1316,18 @@ def to_section(analysis, whole_tool_refusal=None):
         m = e.get("margins")
         if m:
             ex = tune_ident.extrapolated(e["plant"], m) if isinstance(e.get("plant"), PlantModel) else []
+            rejected = _fit_rejected(e.get("plant")) if isinstance(e.get("plant"), PlantModel) else None
             for key, tkey, label in (("gm_db", "tune_gain_margin_db", "gain margin"), ("pm_deg", "tune_phase_margin_deg", "phase margin")):
                 v = m.get(key)
+                unit = "dB" if key == "gm_db" else "deg"
+                if rejected:
+                    npv = m.get("np_" + key)
+                    sec.add(Result(f"{axis} {label}", SKIP,
+                                   f"{_fmt(v, 3)} {unit} on the fitted open loop, not measured: {rejected}"
+                                   + (f"; measured in band {npv:.2f} {unit}" if _fin(npv) else ""),
+                                   evidence=_safe(dict(value=v, np_value=npv, fit_rejected=rejected)),
+                                   source=T[tkey]["source"]))
+                    continue
                 why_x = [x for x in ex if x.startswith("gain margin" if key == "gm_db" else "crossover")]
                 if why_x:
                     sec.add(Result(f"{axis} {label}", SKIP,

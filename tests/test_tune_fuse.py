@@ -529,6 +529,34 @@ def test_section_of_the_end_to_end_analysis_is_complete_and_json_safe():
     assert "| roll  | ATC_RAT_RLL_P" in md or "ATC_RAT_RLL_P" in md
 
 
+def test_a_rejected_plant_fit_neither_grades_margins_nor_sets_ceilings():
+    # issue #16: a 10-inch log FAILed roll gain margin 1.49 dB on a fit whose residual
+    # (3.27 dB) tier B had already refused, and clipped roll D to that fit's margin ceiling
+    _p, log = _log("e2e")
+    real = tune_fuse.tune_ident.identify
+
+    def poor_fit(sigs, *a, **kw):
+        pm = real(sigs, *a, **kw)
+        return pm if isinstance(pm, tune.Refusal) else dataclasses.replace(pm, fit_rms_db=3.27)
+
+    tune_fuse.tune_ident.identify = poor_fit
+    try:
+        a = tune_fuse.analyse([log], [airborne_window(log)])
+    finally:
+        tune_fuse.tune_ident.identify = real
+    e = a.per_axis["roll"]
+    assert e["plant"].fit_rms_db == 3.27 and e["margins"]
+    assert not any(c.method.startswith("margin") for c in e["ceilings"]), [c.method for c in e["ceilings"]]
+    assert any(n.startswith("margin ceilings not applied: plant fit residual 3.27 dB") for n in e["notes"])
+    res = {r.name: r for r in tune_fuse.to_section(a).results}
+    for label in ("roll gain margin", "roll phase margin"):
+        r = res[label]
+        assert r.status == SKIP and "not measured: plant fit residual 3.27 dB >= 3 dB" in r.summary, (label, r.summary)
+        assert r.source == T["tune_gain_margin_db" if "gain" in label else "tune_phase_margin_deg"]["source"]
+    assert not any(r.status == FAIL and "margin" in r.name for r in res.values())
+    assert not any(r.method == "virtual-autotune" for r in a.recommendations if r.axis == "roll")
+
+
 def test_tier_a_wins_when_an_autotune_log_is_added():
     _p1, atun, res = _atun_log()
     _p2, fast = _log("e2e")
