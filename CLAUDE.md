@@ -25,7 +25,9 @@ specific to developing this repository.
 `alog`. See `reference/existing-tools.md`.
 
 There is no cloud CI; before merging, run `python tools/ci_local.py`, which runs the suite
-under Python 3.9 and 3.12 on this machine (it covers this OS only).
+under Python 3.9 and 3.12 on this machine (it covers this OS only). It also builds the
+sdist and wheel from a clean copy of the tree and runs the installed wheel from outside the
+repo, so a document missing from `MANIFEST.in` or `dflog/docs.py` fails there.
 
 Run every test file after changing the parser, the trim math, the checks or the CLI. This
 is the same command `tools/ci_local.py` runs, and it finds each `tests/test_*.py` by glob:
