@@ -78,7 +78,6 @@ LA = "ardupilot Tools/LogAnalyzer @ bdea9be7fb~1 (removed from master 2024-08-14
 DLA = "dronekit-la (unmaintained since 2022)"
 WIKI = "ardupilot.org wiki"
 MEAS = "measured on the development logs; see reference/thresholds.md"
-PROV = "provisional (issue #14): not yet checked against flight logs; see reference/thresholds.md"
 EKF3_GPS = "ArduPilot AP_NavEKF3 calcGpsGoodToAlign, EK3_GPS_CHECK limits"
 # Firmware-derived values for the PID tuning checks (dflog/tune.py). The constants
 # themselves are quoted in reference/pid-tuning-sources.md; the plan that chose these
@@ -132,9 +131,9 @@ T = {
     "gps_hacc":       _t(2.0, 5.0, f"{EKF3_GPS} (fail); {MEAS} (warn)", "GPA.HAcc median over 3D-fix samples, m"),
     "gps_vacc":       _t(3.0, 7.5, f"{EKF3_GPS} (fail); {MEAS} (warn)", "GPA.VAcc median over 3D-fix samples, m"),
     "gps_sacc":       _t(0.5, 1.0, f"{EKF3_GPS} (fail); {MEAS} (warn)", "GPA.SAcc median over 3D-fix samples, m/s"),
-    "gps_vel_glitch_pct": _t(5.0, 15.0, PROV, "worst 30 s bin after the first 60 s: percent of 3D-fix samples "
+    "gps_vel_glitch_pct": _t(5.0, 15.0, MEAS, "worst 30 s bin after the first 60 s: percent of 3D-fix samples "
                                               "with horizontal |vGPS - vEKF| > 0.5 m/s"),
-    "gps_ubx2_low_pct": _t(5.0, 25.0, PROV, "percent of airborne UBX2 samples with min(magI, magQ) below "
+    "gps_ubx2_low_pct": _t(5.0, 25.0, MEAS, "percent of airborne UBX2 samples with min(magI, magQ) below "
                                             "0.8 x the on-ground median"),
 
     # --- power / CPU -----------------------------------------------------

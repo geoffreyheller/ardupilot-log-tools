@@ -1732,18 +1732,30 @@ def _gps_velocity(log, w, gps, params, sec):
     than GPS_VEL_GLITCH. A window with no take-off (_has_takeoff) has no settle: every
     bin from its start counts. A bin counts only when it holds at least GPS_BIN_MIN_FILL
     x its length x the instance's median sample rate, so an intermittent receiver's
-    two-sample bin is not read as a rate. Returns {instance: _gps_vel_error result}."""
-    out = {}
+    two-sample bin is not read as a rate.
+
+    Only the receiver the EKF fuses (GPS_PRIMARY) is graded. A secondary - often an NMEA
+    Remote ID unit - disagrees with an EKF that never used it on every flight, clean or
+    not, so grading it would turn every report into a FAIL. Every receiver's figures are
+    in the ungraded `gps_vel` table. Returns {instance: _gps_vel_error result}."""
+    out, rows = {}, []
+    used = int(params.get("GPS_PRIMARY", 0))
     for i, g in sorted(gps.items()):
         name = f"GPS{i} velocity vs EKF"
+        graded = i == used
+
+        def skip(why):
+            if graded:
+                sec.add(Result(name, SKIP, why))
+            rows.append([f"GPS{i}", "yes" if graded else "no", None, None, None, None, None, why])
+
         e = _gps_vel_error(log, w, i, g, params)
         if e is None:
-            sec.add(Result(name, SKIP, "XKF1 not logged" if not log.has("XKF1")
-                           else "GPS.Spd/GCrs not logged"))
+            skip("XKF1 not logged" if not log.has("XKF1") else "GPS.Spd/GCrs not logged")
             continue
         out[i] = e
         if not len(e["t"]):
-            sec.add(Result(name, SKIP, "no 3D fix in the window"))
+            skip("no 3D fix in the window")
             continue
         takeoff = _has_takeoff(w)
         settle = GPS_SETTLE_S if takeoff else 0.0
@@ -1756,15 +1768,18 @@ def _gps_velocity(log, w, gps, params, sec):
                 if rate is not None and bm.sum() >= GPS_BIN_MIN_FILL * (b1 - b0) * rate]
         where = "after the first %g s" % GPS_SETTLE_S if takeoff else "from the window start (no take-off)"
         if not pcts:
-            why = ("no 30 s bin %s" % where if not bins else
-                   "no 30 s bin %s holds %g x the samples its %s Hz logging rate gives (most: %d 3D-fix samples)"
-                   % (where, GPS_BIN_MIN_FILL, fmt(rate) if rate is not None else "unknown",
-                      max(int(bm.sum()) for _, _, bm in bins)))
-            sec.add(Result(name, SKIP, why))
+            skip("no 30 s bin %s" % where if not bins else
+                 "no 30 s bin %s holds %g x the samples its %s Hz logging rate gives (most: %d 3D-fix samples)"
+                 % (where, GPS_BIN_MIN_FILL, fmt(rate) if rate is not None else "unknown",
+                    max(int(bm.sum()) for _, _, bm in bins)))
             continue
         pct, b0, b1 = max(pcts)
         lagtxt = f"{e['lag_s']:g} s" + (" (assumed)" if e["lag_assumed"] else "")
         n_late = int((bad & late).sum())
+        rows.append([f"GPS{i}", "yes" if graded else "no", pct, int(bad.sum()), n_late,
+                     float(e["err"][k]), float(e["t"][k]), None])
+        if not graded:
+            continue
         sec.add(_grade(
             pct, "gps_vel_glitch_pct", name=name,
             summary_fmt=("worst 30 s bin %s: {v}%% of samples > %g m/s (warn {w}, fail {f}); "
@@ -1776,6 +1791,16 @@ def _gps_velocity(log, w, gps, params, sec):
             n_over=int(bad.sum()), n_late=n_late, max=float(e["err"][k]),
             t_max=float(e["t"][k]), worst_bin=[b0, b1], core=e["core"], lag_s=e["lag_s"],
             settle_s=settle, rate_hz=rate))
+    if rows:
+        sec.table("gps_vel", ["gps", "graded", "worst bin %", "glitches", "after settle",
+                              "max (m/s)", "at (s since boot)", "not computed because"], rows)
+        auto = params.p.get("GPS_AUTO_SWITCH")
+        sec.note(f"Velocity vs EKF is graded only for GPS{used}, the receiver the EKF fuses "
+                 f"(GPS_PRIMARY={used}); the others are listed in gps_vel, ungraded. A receiver "
+                 "the EKF never used disagrees with it on clean flights too."
+                 + (f" GPS_AUTO_SWITCH={fmt(auto)} lets the EKF select or blend another receiver, "
+                    "so the graded one may not be the one it fused throughout."
+                    if auto is not None and int(auto) in (1, 2) else ""))
     return out
 
 

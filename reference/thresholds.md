@@ -34,7 +34,6 @@ threshold table does not list them, and it should not.
 | `DLA` | `dronekit/dronekit-la` — C++ analyzer, Apache 2.0, **unmaintained since Feb 2022**, but the most systematic threshold set available and generally stricter than LA. |
 | `WIKI` | ardupilot.org documentation |
 | `MEAS` | measured on the development logs — roughly 2,000 s of flight across two multirotors (a sub-250 g 5-inch and a 10-inch long-range quad). Aircraft-dependent; treat as a starting point, not gospel. |
-| `PROV` | provisional (issue #14): chosen when the check was written and not yet checked against flight logs. Read the number, not the grade, until it has been. |
 
 Where LA and DLA disagree, both are recorded and the stricter is used for WARN.
 
@@ -92,8 +91,8 @@ average.
 | `gps_hacc` | 2.0 m | 5.0 m | fail: ArduPilot `AP_NavEKF3::calcGpsGoodToAlign` (`EK3_GPS_CHECK`) rejects hAcc > 5 m; warn: MEAS — `GPA.HAcc` median over 3D-fix samples. A receiver behind a bad ground plane read 4.25 m, the same receiver fixed read 0.94 then 0.64 m (issue #5) |
 | `gps_vacc` | 3.0 m | 7.5 m | fail: EKF3 rejects vAcc > 7.5 m; warn: MEAS — `GPA.VAcc` median (5.69 → 1.58 → 0.79 m across the same three flights) |
 | `gps_sacc` | 0.5 m/s | 1.0 m/s | fail: EKF3 rejects sAcc > 1.0 m/s; warn: MEAS — `GPA.SAcc` median (1.34 → 0.33 → 0.20 m/s) |
-| `gps_vel_glitch_pct` | 5 % | 15 % | PROV — worst 30 s bin after the first 60 s (from the window start when the window has no take-off; a bin counts only when it holds at least half the samples the receiver's rate would give) of the percent of 3D-fix samples whose horizontal GPS velocity differs from the primary EKF core's by more than 0.5 m/s (issue #14) |
-| `gps_ubx2_low_pct` | 5 % | 25 % | PROV — percent of airborne `UBX2` samples (u-blox MON-HW2 I/Q magnitude) whose min(magI, magQ) is below 0.8 × the on-ground median, i.e. an RF front end that collapses in flight (issue #14) |
+| `gps_vel_glitch_pct` | 5 % | 15 % | MEAS — clean flights 0–6.7 %, RF-degraded flights 33–57 % (four flights of one 10-inch quad, u-blox primary). Graded only for the receiver the EKF fuses (`GPS_PRIMARY`); a secondary NMEA unit read 24–77 % on clean and degraded flights alike. Worst 30 s bin after the first 60 s (from the window start when the window has no take-off; a bin counts only when it holds at least half the samples the receiver's rate would give) of the percent of 3D-fix samples whose horizontal GPS velocity differs from the primary EKF core's by more than 0.5 m/s (issue #14) |
+| `gps_ubx2_low_pct` | 5 % | 25 % | MEAS — clean flights 0 %, RF-degraded flights 15.5–26.2 % (the same four flights). Percent of airborne `UBX2` samples (u-blox MON-HW2 I/Q magnitude) whose min(magI, magQ) is below 0.8 × the on-ground median, i.e. an RF front end that collapses in flight (issue #14) |
 
 `HDop` is satellite geometry; `GPA.HAcc` is the receiver's own estimate of its horizontal
 error in metres, and it is the number that answers "is the GPS better than it was". Graded

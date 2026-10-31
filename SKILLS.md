@@ -488,15 +488,18 @@ python alog.py compare before.bin after.bin --checks gps
   30 s bin after the first 60 s (acquisition is not graded). A window that does not
   start at a take-off (explicit, hover, arm, mode, whole log) has no settle: every bin
   from its start counts. A bin with fewer than half the samples the receiver's logging
-  rate would give is not graded, so an intermittent secondary is SKIP, not a rate. The
-  5 % / 15 % levels are provisional until checked on real logs.
+  rate would give is not graded, so an intermittent secondary is SKIP, not a rate. Only
+  the receiver the EKF fuses (`GPS_PRIMARY`) is graded; the others are listed, ungraded,
+  in the `gps_vel` table, because a receiver the EKF never used disagrees with it on clean
+  flights too. Levels 5 % / 15 % (clean flights 0–6.7 %, RF-degraded 33–57 %).
 - **`gps{i}_bins`** (30 s from take-off: sats min, HAcc med, SAcc p95, vel glitches,
   `UBX2 low %`) separates acquisition at take-off from mid-flight degradation.
 - **`UBX2`**: magnitudes that collapse airborne and recover on the ground point at
   self-interference. The magnitude level depends on the unit and its AGC (the committed
   large-prop fixture reads about 130-142), so there is no universal healthy value: the
   grade compares each unit with its own on-ground median, taken outside every flight in
-  the log, as the percent of airborne samples below 0.8 x it (provisional 5 % / 25 %). A
+  the log, as the percent of airborne samples below 0.8 x it (5 % / 25 %; clean flights 0 %,
+  RF-degraded 15.5–26.2 %). A
   reference of 0 is SKIP, not a pass. It is logged about every 5 s, so it cannot be matched
   glitch by glitch.
 - **`gps_vs_power`** splits HAcc and glitches at the median current (else throttle) to

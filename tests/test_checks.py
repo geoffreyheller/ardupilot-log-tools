@@ -317,8 +317,28 @@ def test_gps_velocity_agrees_with_ekf():
     rs = _results(_vel_flight())
     r = rs["GPS0 velocity vs EKF"]
     assert r.status == "PASS" and r.evidence["n_over"] == 0 and r.evidence["core"] == 0, r
-    assert rs["GPS1 velocity vs EKF"].status == "SKIP"
-    assert "no 3D fix" in rs["GPS1 velocity vs EKF"].summary
+    assert "GPS1 velocity vs EKF" not in rs            # not the EKF's receiver: ungraded
+    t = _table(_vel_flight(), "gps_vel")
+    g1 = dict(zip(t["columns"], next(r for r in t["rows"] if r[0] == "GPS1")))
+    assert g1["graded"] == "no" and "no 3D fix" in g1["not computed because"], g1
+
+
+def test_gps_velocity_grades_only_the_ekf_receiver():
+    """A secondary the EKF never fused disagrees with it on every flight. It is listed in
+    gps_vel, ungraded, unless GPS_PRIMARY names it."""
+    kw = dict(vel=(2.0, 0.0), ekf=(2.0, 0.0), fix1=[(0.0, 120.0)])   # GPS1 reads 0 m/s
+    sec = _vel_flight(**kw)
+    rs = _results(sec)
+    assert rs["GPS0 velocity vs EKF"].status == "PASS"
+    assert "GPS1 velocity vs EKF" not in rs
+    t = _table(sec, "gps_vel")
+    rows = {r[0]: dict(zip(t["columns"], r)) for r in t["rows"]}
+    assert rows["GPS0"]["graded"] == "yes" and rows["GPS1"]["graded"] == "no"
+    assert rows["GPS1"]["worst bin %"] == pytest.approx(100.0)
+    assert "GPS_PRIMARY=0" in _notes(sec)
+    rs = _results(_vel_flight(params={"GPS_PRIMARY": 1}, **kw))
+    assert rs["GPS1 velocity vs EKF"].status == "FAIL"
+    assert "GPS0 velocity vs EKF" not in rs
 
 
 def test_gps_velocity_glitches_after_settle_are_graded():
@@ -631,10 +651,14 @@ def test_gps_velocity_sparse_secondary_is_skip():
     log = _gps_log("sparse.bin", fix1=[(80.0, 80.15)],
                    ekf=lambda t: (0.7, 0.0) if 79.85 <= t <= 79.95 else (0.0, 0.0))
     sec = check_gps(log, airborne_window(log, method="ev"))
-    r = _results(sec)["GPS1 velocity vs EKF"]
-    assert r.status == "SKIP", r
-    assert "sample" in r.summary, r.summary
+    t = _table(sec, "gps_vel")
+    g1 = dict(zip(t["columns"], next(r for r in t["rows"] if r[0] == "GPS1")))
+    assert g1["worst bin %"] is None and "sample" in g1["not computed because"], g1
     assert _results(sec)["GPS0 velocity vs EKF"].status == "PASS"
+    log = _gps_log("sparse_primary.bin", fix1=[(80.0, 80.15)], params={"GPS_PRIMARY": 1},
+                   ekf=lambda t: (0.7, 0.0) if 79.85 <= t <= 79.95 else (0.0, 0.0))
+    r = _results(check_gps(log, airborne_window(log, method="ev")))["GPS1 velocity vs EKF"]
+    assert r.status == "SKIP" and "sample" in r.summary, r
 
 
 def _two_flight_ubx2_window():
@@ -656,9 +680,16 @@ def test_ubx2_zero_reference_is_skip():
     assert r.status == "SKIP" and "on-ground" in r.summary, r
 
 
-def test_provisional_gps_thresholds_say_so():
+def test_gps_thresholds_are_measured_with_figures():
+    """Checked against four real flights (two clean, two RF-degraded): the source says
+    measured, and thresholds.md records the figures that justify the levels."""
+    with open(os.path.join(os.path.dirname(__file__), "..", "reference", "thresholds.md"),
+              encoding="utf-8") as fh:
+        doc = fh.read()
     for k in ("gps_vel_glitch_pct", "gps_ubx2_low_pct"):
-        assert "provisional" in T[k]["source"], (k, T[k]["source"])
+        assert "measured" in T[k]["source"] and "provisional" not in T[k]["source"], k
+        row = next(line for line in doc.splitlines() if line.startswith(f"| `{k}` |"))
+        assert "RF-degraded" in row and "clean" in row, row
 
 
 # ------------------------------------------------------------ issue #6
