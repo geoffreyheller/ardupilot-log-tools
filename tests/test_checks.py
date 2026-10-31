@@ -46,7 +46,7 @@ def _writer():
     w.fmt(96, "PARM", "QNff", "TimeUS,Name,Value,Default")
     w.fmt(97, "MSG", "QZ", "TimeUS,Message")
     w.fmt(64, "EV", "QB", "TimeUS,Id")
-    w.fmt(200, "GPS", "QBBBfLLfIH", "TimeUS,I,Status,NSats,HDop,Lat,Lng,Alt,GMS,GWk")
+    w.fmt(200, "GPS", "QBBBfLLfIHff", "TimeUS,I,Status,NSats,HDop,Lat,Lng,Alt,GMS,GWk,Spd,GCrs")
     w.fmt(201, "GPA", "QBCfffH", "TimeUS,I,VDop,HAcc,VAcc,SAcc,Delta")
     w.fmt(202, "ESC", "QBfffff", "TimeUS,Instance,RPM,Volt,Curr,Temp,Err")
     w.fmt(203, "RCOU", "QHHHH", "TimeUS,C1,C2,C3,C4")
@@ -59,6 +59,9 @@ def _writer():
     w.fmt(210, "FCN", "QBB" + "f" * 12, "TimeUS,I,NF," + ",".join(f"CF{k}" for k in range(1, 7)) + ","
           + ",".join(f"HF{k}" for k in range(1, 7)))
     w.fmt(211, "VIBE", "QBfffI", "TimeUS,IMU,VibeX,VibeY,VibeZ,Clip")
+    w.fmt(212, "XKF1", "QBff", "TimeUS,C,VN,VE")
+    w.fmt(213, "XKF4", "QBB", "TimeUS,C,PI")
+    w.fmt(214, "UBX2", "QBbBbB", "TimeUS,Instance,ofsI,magI,ofsQ,magQ")
     w.msg("MSG", TimeUS=20, Message="ArduCopter V4.7.1 (deadbeef)")
     w.msg("PARM", TimeUS=30, Name="FRAME_CLASS", Value=1.0, Default=1.0)
     w.msg("PARM", TimeUS=31, Name="FRAME_TYPE", Value=1.0, Default=1.0)
@@ -152,22 +155,41 @@ def _motor_log(name, k=(340.0, 340.0, 340.0, 340.0), pwm_trim=(0, 0, 0, 0), temp
     return _load(w, name)
 
 
-def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True):
+def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=(0.0, 0.0),
+             ekf=(0.0, 0.0), ekf1=None, pi=None, params=None):
     """Two receivers: instance 0 with a 3D fix (accuracies as given, with `spikes` =
     [(t0, t1, hacc)] where HAcc jumps), instance 1 an NMEA unit that never gets a fix
-    and reports HAcc 0 and the saturated VDop 655.35."""
+    and reports HAcc 0 and the saturated VDop 655.35.
+
+    `vel` is GPS0's (Spd, GCrs), `ekf` the XKF1 core 0 (VN, VE) written at 10 Hz (False
+    omits XKF1), `ekf1` a second core 1 when given, `pi` an XKF4.PI written for both
+    cores when given. Each of those takes a constant tuple or a callable of t.
+    `params` are written as PARM records.
+    """
+    def at(v, t):
+        return v(t) if callable(v) else v
+
     w = _writer()
+    _params(w, **(params or {}))
     for i in range(int(SPAN * HZ)):
         t = i / HZ
         us = int(t * 1e6)
         h = next((h for a, b, h in spikes if a <= t <= b), hacc0)
+        spd, crs = at(vel, t)
         w.msg("GPS", TimeUS=us, I=0, Status=3, NSats=12, HDop=0.8, Lat=30.0 + t * 1e-6, Lng=-140.0,
-              Alt=100.0, GMS=int(t * 1000), GWk=2400)
+              Alt=100.0, GMS=int(t * 1000), GWk=2400, Spd=spd, GCrs=crs)
         w.msg("GPA", TimeUS=us, I=0, VDop=1.1, HAcc=h, VAcc=vacc0, SAcc=sacc0, Delta=200)
         if second:
             w.msg("GPS", TimeUS=us, I=1, Status=1, NSats=0, HDop=99.99, Lat=0.0, Lng=0.0, Alt=0.0,
                   GMS=0, GWk=0)
             w.msg("GPA", TimeUS=us, I=1, VDop=655.35, HAcc=0.0, VAcc=0.0, SAcc=0.0, Delta=99)
+        for core, e in ((0, ekf), (1, ekf1)):
+            if e is False or e is None:
+                continue
+            vn, ve = at(e, t)
+            w.msg("XKF1", TimeUS=us, C=core, VN=vn, VE=ve)
+            if pi is not None:
+                w.msg("XKF4", TimeUS=us, C=core, PI=pi)
     return _load(w, name)
 
 
@@ -261,6 +283,76 @@ def test_gps_check_skips_accuracy_when_gpa_is_not_logged():
     assert rs["GPS0 satellites"].status == "PASS"
     assert rs["receiver accuracy"].status == "SKIP" and "GPA" in rs["receiver accuracy"].summary
     assert not any(t["name"] == "gpa" for t in sec.tables)
+
+
+# ------------------------------------------------------------ issue #14
+
+def _vel_flight(**kw):
+    log = _gps_log("vel.bin", **kw)
+    return check_gps(log, airborne_window(log, method="ev"))
+
+
+def test_gps_velocity_agrees_with_ekf():
+    rs = _results(_vel_flight())
+    r = rs["GPS0 velocity vs EKF"]
+    assert r.status == "PASS" and r.evidence["n_over"] == 0 and r.evidence["core"] == 0, r
+    assert rs["GPS1 velocity vs EKF"].status == "SKIP"
+    assert "no 3D fix" in rs["GPS1 velocity vs EKF"].summary
+
+
+def test_gps_velocity_glitches_after_settle_are_graded():
+    def vel(end):
+        return lambda t: (0.8, 0.0) if 30.0 <= t <= 30.95 else (
+            (1.2, 0.0) if 80.0 <= t <= end else (0.0, 0.0))
+    r = _results(_vel_flight(vel=vel(82.95)))["GPS0 velocity vs EKF"]
+    ev = r.evidence
+    assert ev["n_over"] == 40 and ev["n_late"] == 30, ev
+    assert ev["max"] == pytest.approx(1.2, abs=1e-3)
+    assert ev["t_max"] == pytest.approx(80.0, abs=0.25)
+    assert ev["worst_bin"] == [70.0, 100.0], ev
+    assert ev["value"] == pytest.approx(10.0, abs=0.5)
+    assert r.status == "WARN", r
+    assert _results(_vel_flight(vel=vel(86.95)))["GPS0 velocity vs EKF"].status == "FAIL"
+
+
+def test_gps_velocity_uses_the_primary_ekf_core():
+    kw = dict(vel=(2.0, 0.0), ekf=(0.0, 0.0), ekf1=(2.0, 0.0))
+    r = _results(_vel_flight(pi=1, **kw))["GPS0 velocity vs EKF"]
+    assert r.evidence["n_over"] == 0 and r.evidence["core"] == 1, r
+    r = _results(_vel_flight(**kw))["GPS0 velocity vs EKF"]
+    assert r.evidence["core"] == 0 and r.evidence["n_over"] > 0, r
+    assert "no XKF4.PI" in r.summary
+
+
+def test_gps_velocity_course_is_degrees_from_north():
+    for crs, ve in ((90.0, 5.0), (270.0, -5.0)):
+        r = _results(_vel_flight(vel=(5.0, crs), ekf=(0.0, ve)))["GPS0 velocity vs EKF"]
+        assert r.evidence["n_over"] == 0, (crs, r)
+
+
+def test_gps_velocity_compensates_receiver_lag():
+    def ramp(t):
+        return 3.0 * min(max(t - 20.0, 0.0), 5.0)
+    for delay, params in ((0.2, None), (0.1, {"GPS1_DELAY_MS": 100})):
+        r = _results(_vel_flight(vel=lambda t: (ramp(t - delay), 0.0), ekf=lambda t: (ramp(t), 0.0),
+                                 params=params))["GPS0 velocity vs EKF"]
+        assert r.evidence["n_over"] == 0 and r.evidence["max"] < 0.05, r
+        assert r.evidence["lag_s"] == pytest.approx(delay)
+        assert ("assumed" in r.summary) == (params is None), r.summary
+
+
+def test_gps_velocity_skips_without_xkf1():
+    r = _results(_vel_flight(ekf=False))["GPS0 velocity vs EKF"]
+    assert r.status == "SKIP" and "XKF1" in r.summary, r
+
+
+def test_gps_vel_threshold_is_registered_with_a_row():
+    assert T["gps_vel_glitch_pct"]["warn"] == 5.0 and T["gps_vel_glitch_pct"]["fail"] == 15.0
+    assert T["gps_vel_glitch_pct"]["source"]
+    path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                        "reference", "thresholds.md")
+    with open(path, encoding="utf-8") as f:
+        assert any(l.startswith("| `gps_vel_glitch_pct` |") for l in f), "no row in thresholds.md"
 
 
 # ------------------------------------------------------------ issue #6

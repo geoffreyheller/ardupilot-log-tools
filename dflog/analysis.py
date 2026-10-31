@@ -1521,6 +1521,7 @@ def check_gps(log, w):
     if not gps:
         sec.add(Result("gps", SKIP, "no GPS messages"))
         return sec
+    params = _Params(log)
     rows = []
     for i, g in sorted(gps.items()):
         gg = w.clip(g)
@@ -1558,6 +1559,7 @@ def check_gps(log, w):
                                    n_over_warn=int((speed > T["gps_glitch_speed"]["warn"]).sum())))
     sec.table("gps", ["gps", "sats mean", "sats min", "HDOP mean", "HDOP max", "% no 3D fix"], rows)
     _gps_accuracy(log, w, gps, sec)
+    _gps_velocity(log, w, gps, params, sec)
     err = log.df("ERR")
     if not err.empty and {"Subsys", "ECode"} <= set(err.columns):
         gl = err[(err["Subsys"] == 11) & (err["ECode"] == 2)]
@@ -1575,6 +1577,7 @@ def check_gps(log, w):
         sec.note("With two GPS units, the differential is the diagnostic. Both degraded similarly\n"
                  "implicates a shared external emitter; one much worse than the other implicates that\n"
                  "unit (self-jam, weak front end) rather than a uniform RF problem.")
+    params.note(sec)
     return sec
 
 
@@ -1645,6 +1648,105 @@ def _gps_accuracy(log, w, gps, sec):
                  "the median over 3D-fix samples; HDOP above is geometry only. Fail levels are the "
                  "EKF's own GPS-check limits (5 m / 7.5 m / 1.0 m/s). "
                  + ("Fix rate from GPA.Delta: " + "; ".join(rates) + "." if rates else ""))
+
+
+GPS_VEL_GLITCH = 0.5          # m/s: horizontal |v_GPS - v_EKF| above this is a velocity glitch (issue #14)
+GPS_SETTLE_S = 60.0           # glitches in the first 60 s after take-off are acquisition, not graded
+GPS_BIN_S = 30.0
+GPS_BIN_MIN_S = 10.0          # a trailing partial bin is kept only if it spans at least this long
+GPS_DEFAULT_LAG_S = 0.2       # AP_GPS_Backend::get_lag() default, used when no GPS delay parameter is set
+
+
+def _time_bins(w, t):
+    """[(b0, b1, mask)] for consecutive GPS_BIN_S bins from the window start (take-off).
+    `t` are sample times in seconds since boot; a trailing bin shorter than GPS_BIN_MIN_S
+    is dropped."""
+    out, b0 = [], w.t0
+    while b0 < w.t1:
+        b1 = min(b0 + GPS_BIN_S, w.t1)
+        if b1 - b0 >= GPS_BIN_MIN_S:
+            out.append((b0, b1, (t >= b0) & ((t <= b1) if b1 >= w.t1 else (t < b1))))
+        b0 += GPS_BIN_S
+    return out
+
+
+def _gps_lag_s(params, i):
+    """(lag in s, assumed) for GPS instance i: GPS{i+1}_DELAY_MS, then GPS_DELAY_MS, else
+    the driver default. Uses `in` so a missing parameter is not recorded as defaulted."""
+    for name in (f"GPS{i + 1}_DELAY_MS", "GPS_DELAY_MS"):
+        if name in params and params.p[name] > 0:
+            return params.p[name] / 1000.0, False
+    return GPS_DEFAULT_LAG_S, True
+
+
+def _gps_vel_error(log, w, i, g, params):
+    """Horizontal |v_GPS - v_EKF| at each 3D-fix sample of GPS i in the window (issue #14).
+
+    v_GPS = Spd at GCrs (degrees from true north: vN = Spd cos, vE = Spd sin). The EKF
+    velocity is XKF1.VN/VE of the primary core - the median of XKF4.PI over the window,
+    else core 0 - evaluated `lag` seconds before the GPS sample, because the receiver
+    reports the vehicle's velocity from `lag` earlier. None if XKF1 or GPS Spd/GCrs is
+    missing."""
+    xkf1 = log.instances("XKF1")
+    gg = w.clip(g)
+    if not xkf1 or gg is None or gg.empty or not {"Spd", "GCrs", "Status", "t"} <= set(gg.columns):
+        return None
+    core, core_from = 0, "core 0 (no XKF4.PI)"
+    x4 = w.clip(log.df("XKF4"))
+    if x4 is not None and "PI" in x4.columns and len(x4):
+        core, core_from = int(round(float(np.nanmedian(x4["PI"])))), "XKF4.PI"
+    if core not in xkf1:
+        core, core_from = min(xkf1), f"core {min(xkf1)} (XKF4.PI core not in XKF1)"
+    ek = xkf1[core]
+    gg = gg[gg["Status"] >= 3]
+    lag, assumed = _gps_lag_s(params, i)
+    t = gg["t"].values
+    crs = np.radians(gg["GCrs"].values)
+    vn = gg["Spd"].values * np.cos(crs)
+    ve = gg["Spd"].values * np.sin(crs)
+    te = t - lag
+    err = np.hypot(vn - np.interp(te, ek["t"].values, ek["VN"].values),
+                   ve - np.interp(te, ek["t"].values, ek["VE"].values))
+    return dict(t=t, err=err, core=core, core_from=core_from, lag_s=lag, lag_assumed=assumed)
+
+
+def _gps_velocity(log, w, gps, params, sec):
+    """GPS-vs-EKF velocity consistency per receiver (issue #14).
+
+    Graded as the worst 30 s bin, past the first 60 s after take-off, of the percent of
+    3D-fix samples whose horizontal velocity differs from the primary EKF core by more
+    than GPS_VEL_GLITCH. Returns {instance: _gps_vel_error result} for later checks."""
+    out = {}
+    for i, g in sorted(gps.items()):
+        name = f"GPS{i} velocity vs EKF"
+        e = _gps_vel_error(log, w, i, g, params)
+        if e is None:
+            sec.add(Result(name, SKIP, "XKF1 not logged" if not log.has("XKF1")
+                           else "GPS.Spd/GCrs not logged"))
+            continue
+        out[i] = e
+        if not len(e["t"]):
+            sec.add(Result(name, SKIP, "no 3D fix in the window"))
+            continue
+        bad = e["err"] > GPS_VEL_GLITCH
+        late = e["t"] >= w.t0 + GPS_SETTLE_S
+        k = int(np.argmax(e["err"]))
+        pcts = [(100.0 * float(bad[bm].mean()), b0, b1) for b0, b1, bm in _time_bins(w, e["t"])
+                if b0 >= w.t0 + GPS_SETTLE_S and bm.any()]
+        if not pcts:
+            sec.add(Result(name, SKIP, "no full 30 s bin after the first 60 s"))
+            continue
+        pct, b0, b1 = max(pcts)
+        lagtxt = f"{e['lag_s']:g} s" + (" (assumed)" if e["lag_assumed"] else "")
+        sec.add(_grade(
+            pct, "gps_vel_glitch_pct", name=name,
+            summary_fmt=("worst 30 s bin after the first 60 s: {v}%% of samples > %g m/s (warn {w}, fail {f}); "
+                         "%d in the window, max %s m/s at %s s; vs XKF1 %s, GPS lag %s")
+                        % (GPS_VEL_GLITCH, int(bad.sum()), fmt(float(e["err"][k])), fmt(float(e["t"][k])),
+                           f"core {e['core']}" if e["core_from"] == "XKF4.PI" else e["core_from"], lagtxt),
+            n_over=int(bad.sum()), n_late=int((bad & late).sum()), max=float(e["err"][k]),
+            t_max=float(e["t"][k]), worst_bin=[b0, b1], core=e["core"], lag_s=e["lag_s"]))
+    return out
 
 
 # ------------------------------------------------------------------------- CPU

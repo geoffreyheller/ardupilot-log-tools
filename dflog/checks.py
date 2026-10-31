@@ -131,6 +131,8 @@ T = {
     "gps_hacc":       _t(2.0, 5.0, f"{EKF3_GPS} (fail); {MEAS} (warn)", "GPA.HAcc median over 3D-fix samples, m"),
     "gps_vacc":       _t(3.0, 7.5, f"{EKF3_GPS} (fail); {MEAS} (warn)", "GPA.VAcc median over 3D-fix samples, m"),
     "gps_sacc":       _t(0.5, 1.0, f"{EKF3_GPS} (fail); {MEAS} (warn)", "GPA.SAcc median over 3D-fix samples, m/s"),
+    "gps_vel_glitch_pct": _t(5.0, 15.0, MEAS, "worst 30 s bin after the first 60 s: percent of 3D-fix samples "
+                                              "with horizontal |vGPS - vEKF| > 0.5 m/s"),
 
     # --- power / CPU -----------------------------------------------------
     "vcc_min":        _t(4.7, 4.6, LA, "POWR.Vcc volts, low side"),
