@@ -37,7 +37,7 @@ CI runs only `test_toolkit.py`, `test_parser_integrity.py` and `test_cli.py`. `R
 
 - [x] Add a single entry point that runs every file: `tests/run_all.py`, which globs `tests/test_*.py`, runs each in its own process through the shim (no pytest needed), and fails a file that has no `_shim.run` main block rather than counting it as passed.
 - [x] Update `.github/workflows/ci.yml` to use that entry point on all OS/Python combinations.
-- [ ] Fix any test that fails once it actually runs in CI (separate commit per fix, with an explanation). All 14 pass locally on Windows, Python 3.12; CI on the branch settles the rest.
+- [ ] Fix any test that fails once it actually runs in CI (separate commit per fix, with an explanation). All 14 pass locally on Windows, Python 3.12 and 3.9.25 (numpy 2.0.2, pandas 2.3.3, scipy 1.13.1); Linux and macOS still need CI.
 - [x] Update `CLAUDE.md` §12, `RULES.md` §5 and `README.md` (Tests, Contributing) so all name the same single command.
 
 **Done when:** CI runs every test file on Windows, Linux and macOS, Python 3.9 and 3.12, and the docs agree.
