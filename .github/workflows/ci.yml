@@ -18,9 +18,8 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m pip install -r requirements.txt
-      # Synthetic-log tests: the parser's fail-loud behaviour on every malformed input
-      # the writer can produce. The reference-log regressions skip when LOG_DIR is unset.
-      - run: python tests/test_toolkit.py
-      - run: python tests/test_parser_integrity.py
-      - run: python tests/test_cli.py
+      # Every tests/test_*.py, found by glob, each in its own process. The reference-log
+      # regressions in test_toolkit.py skip when LOG_DIR is unset; the committed fixture
+      # (tests/fixtures/largeprop-quad.bin) and the synthetic logs run everywhere.
+      - run: python tests/run_all.py
       - run: python alog.py --help

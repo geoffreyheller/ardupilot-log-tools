@@ -75,14 +75,12 @@ not break.
 
 ## 5. Changing the tools.
 
-- Run all six test files before and after: `tests/test_toolkit.py` (pinned regression
-  figures on the reference logs, skipped when `LOG_DIR` is unset),
-  `tests/test_parser_integrity.py` (synthetic malformed logs, every integrity code),
-  `tests/test_cli.py` (exit codes and JSON contract), `tests/test_flights.py`
-  (flight segmentation and window selection), `tests/test_checks.py` (the checks on
-  synthetic logs) and `tests/test_largeprop.py` (pinned figures on the committed,
-  scrubbed large-prop fixture). A change that makes a pinned figure move is wrong until
-  proven otherwise.
+- Run every test file before and after: `python tests/run_all.py`. It finds each
+  `tests/test_*.py` by glob and runs it in its own process, and CI runs exactly the same
+  command, so a new test file needs no registration anywhere. The pinned regression figures
+  on the reference logs (`tests/test_toolkit.py`) skip when `LOG_DIR` is unset; the
+  committed, scrubbed large-prop fixture (`tests/test_largeprop.py`) and the synthetic logs
+  run everywhere. A change that makes a pinned figure move is wrong until proven otherwise.
 - A fixture cut from a real log goes through `tools/make_fixture.py`, which relocates
   every position, zeroes the MCU serial and drops every MSG text not on its allow-list.
   Review the MSG list it prints before committing.

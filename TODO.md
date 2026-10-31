@@ -33,12 +33,14 @@ Checker: https://github.com/scientific-python/cookie (`sp-repo-review`)
 
 CI runs only `test_toolkit.py`, `test_parser_integrity.py` and `test_cli.py`. `RULES.md` §5 lists six files; `CLAUDE.md` §11 says "all three". `test_flights.py`, `test_checks.py` and `test_largeprop.py` never run in CI.
 
-- [ ] Add a single entry point that runs all six files (e.g. `python -m pytest`, which already uses `testpaths = ["tests"]`, or a small `tests/run_all.py` that works without pytest via the existing shim).
-- [ ] Update `.github/workflows/ci.yml` to use that entry point on all OS/Python combinations.
-- [ ] Fix any test that fails once it actually runs in CI (separate commit per fix, with an explanation).
-- [ ] Update `CLAUDE.md` §11 and `RULES.md` §5 so both name the same single command.
+*(2026-10-31: by now there were 14 test files and CI still ran 3.)*
 
-**Done when:** CI runs all six test files on Windows, Linux and macOS, Python 3.9 and 3.12, and both docs agree.
+- [x] Add a single entry point that runs every file: `tests/run_all.py`, which globs `tests/test_*.py`, runs each in its own process through the shim (no pytest needed), and fails a file that has no `_shim.run` main block rather than counting it as passed.
+- [x] Update `.github/workflows/ci.yml` to use that entry point on all OS/Python combinations.
+- [ ] Fix any test that fails once it actually runs in CI (separate commit per fix, with an explanation). All 14 pass locally on Windows, Python 3.12; CI on the branch settles the rest.
+- [x] Update `CLAUDE.md` §12, `RULES.md` §5 and `README.md` (Tests, Contributing) so all name the same single command.
+
+**Done when:** CI runs every test file on Windows, Linux and macOS, Python 3.9 and 3.12, and the docs agree.
 
 ---
 

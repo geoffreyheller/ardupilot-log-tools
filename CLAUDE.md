@@ -533,7 +533,16 @@ line in the project's notes has done half the job.
 (WMM expected earth field, magfit) or `mavfft_isb.py`. It is not needed for anything in
 `alog`. See `reference/existing-tools.md`.
 
-Run the test files after changing the parser, the trim math, the checks or the CLI:
+Run every test file after changing the parser, the trim math, the checks or the CLI. This
+is the same command CI runs, and it finds each `tests/test_*.py` by glob:
+
+```bash
+python tests/run_all.py                # every file, each in its own process; exit 1 if any failed
+python tests/run_all.py cli flights    # only test_cli.py and test_flights.py
+LOG_DIR=/path/to/logs python tests/run_all.py toolkit   # the reference-log pins
+```
+
+What each file covers, for running one directly:
 
 ```bash
 python tests/test_parser_integrity.py
