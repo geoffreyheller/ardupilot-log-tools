@@ -182,8 +182,9 @@ and `--flight` explicitly when it complains; do not read the table until it stop
 - **paramcheck, brownout** — NaN parameters, parameters rewritten in flight, hover-throttle
   drift, and whether the log ended while still armed and airborne.
 - **vibe, imu** — VIBE p95 and **clip counts**. Clipping is the hard failure — the
-  accelerometer saturated and the EKF was fed garbage. IMU health counters and dual-IMU
-  agreement.
+  accelerometer saturated and the EKF was fed garbage. The `vibe_bands` table splits both
+  by throttle (band edges in `SKILLS.md` Skill 5); quote the **high** band for punch-outs,
+  since the whole-window p95 is mostly hover. IMU health counters and dual-IMU agreement.
 - **motors** — per-motor RCOU and RPM through the **SERVOn_FUNCTION channel map**, then the
   trim decomposition (§5). A standing imbalance contaminates every tuning conclusion drawn
   from the same log, so clear it first. The ESC table carries p05/p95 RPM (min and max are

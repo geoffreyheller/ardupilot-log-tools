@@ -173,6 +173,14 @@ python alog.py spectrum flight.bin --window rpm       # the same, as a report se
 - **Clip events** are the hard failure: the accelerometer saturated and the EKF was fed
   garbage. Any non-zero count is a finding.
 - VibeX/Y p95 under 15 m/s² is good, over 30 a problem; Z tolerates a little more.
+- **Banded by throttle** (`vibe_bands` table, run without `--window hover`): p95, max and
+  clips per band, per IMU. *idle* — armed on the ground, `CTUN.ThO` ≤ 0.05; *hover* —
+  `|ThO − ThH|` ≤ 0.04; *high* — `ThO` ≥ max(0.60, ThH + 0.10); *touchdown* — the last 3 s
+  of the window, which takes precedence. A band needs 10 samples to be listed. The high
+  band is graded on its own (`IMU0 VibeX p95 (high throttle)`): it is the punch-out
+  baseline to compare between flights. A whole-window max with no matching high-band max
+  is a one-off (look at touchdown), not every full-throttle burst. No `CTUN` → no bands,
+  and the section says so.
 - The FFT states its source, sample rate and Nyquist, and labels peaks in **motor orders**
   when ESC telemetry exists (`order 1.98` = the second harmonic). It refuses irregular
   sampling rather than transforming it, and exits 1 when the Nyquist is below the motor
