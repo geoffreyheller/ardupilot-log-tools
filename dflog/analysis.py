@@ -1569,6 +1569,7 @@ def check_gps(log, w):
                            source="LogAnalyzer TestGPSGlitch (ERR Subsys 11 ECode 2)"))
     ubx = _gps_ubx2(log, w, sec)
     _gps_bins(log, w, gps, vel, ubx, sec)
+    _gps_vs_power(log, w, gps, vel, sec)
     _gps_takeoff(log, w, gps, sec)
     if len(gps) > 1:
         sec.note("With two GPS units, the differential is the diagnostic. Both degraded similarly\n"
@@ -1824,6 +1825,78 @@ def _gps_bins(log, w, gps, vel, ubx, sec):
         sec.note("GPS bins are %g s long, timed from %s; times in the bin tables are seconds after that."
                  % (GPS_BIN_S, f"take-off ({w.t0:.1f} s since boot)" if _has_takeoff(w)
                     else f"the window start ({w.t0:.1f} s since boot; no take-off in this window)"))
+
+
+GPS_POWER_MIN_N = 10          # GPA samples a half of the power split needs to be reported
+
+
+def _gps_vs_power(log, w, gps, vel, sec):
+    """GPS accuracy and velocity glitches split by current, else throttle (issue #14).
+
+    A receiver sharing a rail or a wire bundle with the power system degrades when the
+    load rises. The split is the median of the source (the lowest BAT instance with a
+    finite Curr in the window, else CTUN.ThO) over the instance's 3D-fix GPA samples:
+    low is <= the median, high is >. HAcc halves use GPA times; glitch halves use the
+    velocity-error times with the same split value. Not graded. Because it splits at the
+    median, a constant offset in the current reading cannot move it."""
+    src = None
+    for k, b in sorted(log.instances("BAT").items()):
+        bb = w.clip(b)
+        if bb is not None and not bb.empty and "Curr" in bb.columns and len(bb) > 1                 and np.isfinite(bb["Curr"].values.astype(float)).any():
+            ok = np.isfinite(bb["Curr"].values.astype(float))
+            src = (f"BAT{k}.Curr (A)", bb["t"].values[ok], bb["Curr"].values.astype(float)[ok])
+            break
+    if src is not None:
+        name, st, sv = src
+
+        def at(t):
+            return np.interp(t, st, sv)
+    else:
+        probe = np.array([w.t0, w.t1])
+        if _throttle_at(log, probe) is None:
+            sec.note("GPS accuracy vs power: needs BAT.Curr or CTUN.ThO, neither is logged in the window.")
+            return
+        name = "CTUN.ThO"
+
+        def at(t):
+            return _throttle_at(log, t)
+    gpa = log.instances("GPA")
+    rows, dropped = [], []
+    for i, g in sorted(gps.items()):
+        aa = w.clip(gpa.get(i))
+        if aa is None or aa.empty or "HAcc" not in aa.columns:
+            continue
+        fix = _gpa_fix(aa, g)
+        fix = fix[fix["HAcc"] > 0]
+        if fix.empty:
+            continue
+        p = at(fix["t"].values)
+        split = float(np.nanmedian(p))
+        if not np.isfinite(split):
+            continue
+        hi = p > split
+        if int(hi.sum()) < GPS_POWER_MIN_N:
+            dropped.append(f"GPS{i}")
+            continue
+        h = fix["HAcc"].values
+        gl_lo = gl_hi = None
+        v = vel.get(i)
+        if v is not None and len(v["t"]):
+            vh = at(v["t"]) > split
+            bad = v["err"] > GPS_VEL_GLITCH
+            gl_hi, gl_lo = int((bad & vh).sum()), int((bad & ~vh).sum())
+        rows.append([f"GPS{i}", name, split, int((~hi).sum()), int(hi.sum()),
+                     float(np.nanmedian(h[~hi])), float(np.nanmedian(h[hi])), gl_lo, gl_hi])
+    if rows:
+        sec.table("gps_vs_power", ["gps", "split on", "split at", "n low", "n high",
+                                   "HAcc med low (m)", "HAcc med high (m)",
+                                   "vel glitches low", "vel glitches high"], rows)
+        sec.note("GPS accuracy vs power splits 3D-fix samples at the median of %s (low <=, high >). "
+                 "It tests for interference from the power system; it is not graded. An offset in "
+                 "the current reading does not move a median split." % name)
+    if dropped:
+        sec.note("GPS accuracy vs power: %s omitted, %s never rose meaningfully above its median "
+                 "(fewer than %d samples in the high half)." % (", ".join(dropped), name, GPS_POWER_MIN_N))
 
 
 def _gps_takeoff(log, w, gps, sec):
