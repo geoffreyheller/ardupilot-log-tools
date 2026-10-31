@@ -164,7 +164,8 @@ def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=
     `vel` is GPS0's (Spd, GCrs), `ekf` the XKF1 core 0 (VN, VE) written at 10 Hz (False
     omits XKF1), `ekf1` a second core 1 when given, `pi` an XKF4.PI written for both
     cores when given. Each of those takes a constant tuple or a callable of t.
-    `nofix=[(t0, t1)]` drops GPS0 to Status 1 in those spans. `params` are written as PARM records. `ubx2` is a callable of t returning (magI, magQ)
+    `nofix=[(t0, t1)]` drops GPS0 to Status 1 in those spans.
+    `params` are written as PARM records. `ubx2` is a callable of t returning (magI, magQ)
     or (ofsI, magI, ofsQ, magQ), or None for no record; written as UBX2 instance 0 every
     5 s from t = 0.
     """
@@ -178,7 +179,8 @@ def _gps_log(name, hacc0=0.8, vacc0=1.2, sacc0=0.3, spikes=(), second=True, vel=
         us = int(t * 1e6)
         h = next((h for a, b, h in spikes if a <= t <= b), hacc0)
         spd, crs = at(vel, t)
-        w.msg("GPS", TimeUS=us, I=0, Status=1 if any(a <= t <= b for a, b in nofix) else 3, NSats=12, HDop=0.8, Lat=30.0 + t * 1e-6, Lng=-140.0,
+        status = 1 if any(a <= t <= b for a, b in nofix) else 3
+        w.msg("GPS", TimeUS=us, I=0, Status=status, NSats=12, HDop=0.8, Lat=30.0 + t * 1e-6, Lng=-140.0,
               Alt=100.0, GMS=int(t * 1000), GWk=2400, Spd=spd, GCrs=crs)
         w.msg("GPA", TimeUS=us, I=0, VDop=1.1, HAcc=h, VAcc=vacc0, SAcc=sacc0, Delta=200)
         if ubx2 is not None and i % int(5 * HZ) == 0:
@@ -434,13 +436,13 @@ def test_gps_bins_are_timed_from_takeoff():
 
 
 def test_gps_bins_exclude_samples_without_a_fix():
-    log = _gps_log("bins_nofix.bin", spikes=[(45.0, 54.95, 9.0)], nofix=[(45.0, 54.95)])
+    """GPA has no status of its own: its samples during a no-fix span (here 2/3 of the
+    30-60 s bin, HAcc 9.0) must be dropped using GPS.Status, or the bin median reads 9.0."""
+    log = _gps_log("bins_nofix.bin", spikes=[(40.0, 59.95, 9.0)], nofix=[(40.0, 59.95)])
     sec = check_gps(log, airborne_window(log, method="ev"))
-    rows = _rows(sec, "gps0_bins")
-    assert rows[1]["from (s)"] == 30
-    assert rows[1]["HAcc med (m)"] == pytest.approx(0.8, abs=1e-6), rows[1]
-    full = _rows(_bins_flight(), "gps0_bins")[1]["n"]
-    assert rows[1]["n"] < full, (rows[1], full)
+    row = _rows(sec, "gps0_bins")[1]
+    assert row["from (s)"] == 30
+    assert row["HAcc med (m)"] == pytest.approx(0.8, abs=1e-6), row
 
 
 def test_gps_takeoff_conditions():
