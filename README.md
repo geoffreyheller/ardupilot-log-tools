@@ -286,6 +286,7 @@ python tests/test_toolkit.py                 # pinned regression figures (skips 
 LOG_DIR=/path/to/logs python tests/test_toolkit.py
 python tests/test_tune_extract.py            # PID tuning, one file per tier: extract, sim, step, atun, ident, fuse
 python tests/test_tune_docs.py               # the tuning docs agree with tune.LOGGING_REQUIREMENTS, REFUSAL_CODES and T
+python tests/test_docs_api.py                # the CLAUDE.md §1 Python snippet runs and its accessors behave as documented
 ```
 
 The regression suite pins hand-verified numbers from two reference logs: attitude error sd
