@@ -880,15 +880,21 @@ def describe(plant, m=None):
                      f"{plant.fit_rms_deg:.1f} deg")
     lines.append(f"Bendat-Piersol random error of |G| at the crossover: {100.0 * plant.eps_mag_at_crossover:.1f} %")
     if m is not None:
+        r = m.get("fit_rejected")
         lines.append(f"open loop (fit): crossover {_fmt(m['fc_hz'], 2, ' Hz')}, phase margin {_fmt(m['pm_deg'], 1, ' deg')}, "
-                     f"gain margin {_fmt(m['gm_db'], 2, ' dB')} at {_fmt(m['f180_hz'], 2, ' Hz')}")
+                     f"gain margin {_fmt(m['gm_db'], 2, ' dB')} at {_fmt(m['f180_hz'], 2, ' Hz')}"
+                     + (f" (fit rejected: {r}; not graded)" if r else ""))
         if m.get("np_in_band"):
             lines.append(f"open loop (measured, in band): crossover {_fmt(m['np_fc_hz'], 2, ' Hz')}, phase margin "
                          f"{_fmt(m['np_pm_deg'], 1, ' deg')}, gain margin {_fmt(m['np_gm_db'], 2, ' dB')} at "
                          f"{_fmt(m['np_f180_hz'], 2, ' Hz')}")
         elif band is not None:
-            lines.append("open loop (measured): the unity-gain crossing lies outside the coherent band; "
-                         "only the fit's margins are available")
+            if r:
+                lines.append("open loop (measured): the unity-gain crossing lies outside the coherent band "
+                             f"and the fit is rejected ({r}): no usable margins")
+            else:
+                lines.append("open loop (measured): the unity-gain crossing lies outside the coherent band; "
+                             "only the fit's margins are available")
     return lines
 
 
@@ -912,7 +918,8 @@ def plant_rows(plant):
 def margin_rows(m):
     """`(headers, rows)` for `Section.table`: the parametric and the in-band
     non-parametric open loop."""
-    rows = [["fit x C(z)", _fmt(m["fc_hz"], 2), _fmt(m["pm_deg"], 1), _fmt(m["gm_db"], 2), _fmt(m["f180_hz"], 2)]]
+    label = f"fit x C(z), REJECTED: {m['fit_rejected']}" if m.get("fit_rejected") else "fit x C(z)"
+    rows = [[label, _fmt(m["fc_hz"], 2), _fmt(m["pm_deg"], 1), _fmt(m["gm_db"], 2), _fmt(m["f180_hz"], 2)]]
     rows.append(["measured G x C(z), in band", _fmt(m.get("np_fc_hz"), 2), _fmt(m.get("np_pm_deg"), 1),
                  _fmt(m.get("np_gm_db"), 2), _fmt(m.get("np_f180_hz"), 2)])
     return ["open loop", "crossover Hz", "phase margin deg", "gain margin dB", "-180 deg at Hz"], rows

@@ -1073,6 +1073,10 @@ def analyse(logs, windows, axes=AXES, prop_in=None, aggr=None, log_names=None):
                             ids[names.index(s.log_name)]["contributed"].append("B")
                     m = tune_ident.margins(pm, current)
                     entry["margins"] = {k: v for k, v in m.items() if k not in ("L", "np_L", "freqs_hz", "np_freqs_hz")}
+                    # a fit that fails the residual gate keeps its numbers as evidence, but every display says so
+                    rejected = _fit_rejected(pm)
+                    entry["fit_rejected"] = rejected
+                    entry["margins"]["fit_rejected"] = rejected
                     bo = tune_atun.backoff_for(tune_atun.firmware_version(ids[latest]["firmware"]), current.gmbk, current.aggr)
                     gmbk_eff = 1.0 - float(bo["rate_p"])
                     va = tune_ident.virtual_autotune(pm, current, aggr=aggr, gmbk=gmbk_eff, axis=axis)
@@ -1084,7 +1088,6 @@ def analyse(logs, windows, axes=AXES, prop_in=None, aggr=None, log_names=None):
                     done = bool(va.get("complete"))
                     d_for_p = va.get("rat_d") if done and _fin(va.get("rat_d")) else None
                     p_for_d = va.get("rat_p") if done and _fin(va.get("rat_p")) else None
-                    rejected = _fit_rejected(pm)
                     if rejected:
                         entry["notes"].append(f"margin ceilings not applied: {rejected}")
                     else:
@@ -1095,7 +1098,8 @@ def analyse(logs, windows, axes=AXES, prop_in=None, aggr=None, log_names=None):
                     if heli:
                         entry["notes"].append(
                             "heli AutoTune ceilings (evidence only, not applied: P-only rules that ignore D's phase lead): "
-                            + ", ".join(f"{c.param} {c.value:.4g} ({c.method})" for c in heli))
+                            + ", ".join(f"{c.param} {c.value:.4g} ({c.method})" for c in heli)
+                            + (f"; from a rejected fit ({rejected})" if rejected else ""))
             except Exception as exc:
                 _record_error(entry, "B", exc)
 
@@ -1443,7 +1447,8 @@ def to_section(analysis, whole_tool_refusal=None):
                 sec.note(f"{axis}: virtual AutoTune -> P {_fmt(va.get('rat_p'))} I {_fmt(va.get('rat_i'))} D {_fmt(va.get('rat_d'))} "
                          f"ANG_P {_fmt(va.get('ang_p'))} ACC {_fmt(va.get('acc_max_dps2'))} deg/s^2"
                          + (f" FLTE {_fmt(va.get('flte'))} Hz" if axis == "yaw" else "") + f"; {va.get('why', '')}"
-                         + (f"; backoff {va['backoff']['branch']} rate x{va['backoff']['rate_p']:.3f}" if va.get("backoff") else ""))
+                         + (f"; backoff {va['backoff']['branch']} rate x{va['backoff']['rate_p']:.3f}" if va.get("backoff") else "")
+                         + (f"; from a rejected fit ({e['fit_rejected']})" if e.get("fit_rejected") else ""))
         elif e.get("plant_refusal") is not None:
             sec.note(f"{axis}: plant identification: {e['plant_refusal'].code} - {e['plant_refusal'].message}")
         for s in e.get("autotune") or []:

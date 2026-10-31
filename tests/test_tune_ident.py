@@ -386,6 +386,25 @@ def test_describe_and_rows_are_deterministic_strings():
         assert "\n" not in line and "nan" not in line.lower()
 
 
+def test_a_rejected_fit_is_labelled_in_the_notes_and_the_margins_table():
+    pm = ti.identify(_signals("steps", stick="steps"))
+    m = ti.margins(pm, _gains())
+    why = "plant fit residual 3.27 dB >= 3 dB"
+    ok_lines = ti.describe(pm, dict(m, fit_rejected=None))
+    assert ti.describe(pm, m) == ok_lines and not any("rejected" in x for x in ok_lines)
+    assert ti.margin_rows(dict(m, fit_rejected=None))[1][0][0] == "fit x C(z)"
+    assert ti.margin_rows(dict(m, fit_rejected=why))[1][0][0] == f"fit x C(z), REJECTED: {why}"
+    rej = dict(m, fit_rejected=why)
+    lines = ti.describe(pm, rej)
+    assert lines[3].endswith(f" (fit rejected: {why}; not graded)")
+    out = ti.describe(pm, dict(rej, np_in_band=False))
+    last = out[-1]
+    assert last == ("open loop (measured): the unity-gain crossing lies outside the coherent band "
+                    f"and the fit is rejected ({why}): no usable margins")
+    assert not any("only the fit's margins are available" in x for x in out)
+    assert any("only the fit's margins are available" in x for x in ti.describe(pm, dict(m, np_in_band=False)))
+
+
 def test_identification_is_deterministic():
     a = ti.identify(_signals("steps", stick="steps"))
     b = ti.identify(_signals("steps", stick="steps"))

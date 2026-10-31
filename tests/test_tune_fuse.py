@@ -527,6 +527,11 @@ def test_section_of_the_end_to_end_analysis_is_complete_and_json_safe():
     json.dumps(tune_fuse.analysis_to_dict(a), allow_nan=False)
     md = sec.render()
     assert "| roll  | ATC_RAT_RLL_P" in md or "ATC_RAT_RLL_P" in md
+    # an accepted fit carries no rejection label anywhere
+    assert a.per_axis["roll"]["fit_rejected"] is None and a.per_axis["roll"]["margins"]["fit_rejected"] is None
+    mrows = {t["name"]: t for t in sec.tables}["margins"]["rows"]
+    assert not any("REJECTED" in str(c) for r in mrows for c in r)
+    assert not any("rejected fit" in n or "fit rejected" in n for n in sec.notes)
 
 
 def test_a_rejected_plant_fit_neither_grades_margins_nor_sets_ceilings():
@@ -555,6 +560,17 @@ def test_a_rejected_plant_fit_neither_grades_margins_nor_sets_ceilings():
         assert r.source == T["tune_gain_margin_db" if "gain" in label else "tune_phase_margin_deg"]["source"]
     assert not any(r.status == FAIL and "margin" in r.name for r in res.values())
     assert not any(r.method == "virtual-autotune" for r in a.recommendations if r.axis == "roll")
+    # the numbers stay as evidence, but every place that shows them says the fit was rejected
+    why = "plant fit residual 3.27 dB"
+    assert e["fit_rejected"].startswith(why) and e["margins"]["fit_rejected"].startswith(why)
+    sec = tune_fuse.to_section(a)
+    tbl = {t["name"]: t for t in sec.tables}["margins"]
+    assert any(r[0] == "roll" and f"REJECTED: {why}" in r[1] for r in tbl["rows"]), tbl["rows"]
+    notes = [n for n in sec.notes if n.startswith("roll:")]
+    shown = [n for n in notes if "open loop (fit)" in n or "virtual AutoTune ->" in n or "heli AutoTune ceilings" in n]
+    assert any("open loop (fit)" in n for n in shown) and any("virtual AutoTune ->" in n for n in shown)
+    assert all(why in n for n in shown), shown
+    assert tune_fuse.analysis_to_dict(a)["per_axis"]["roll"]["margins"]["fit_rejected"].startswith(why)
 
 
 def test_tier_a_wins_when_an_autotune_log_is_added():
