@@ -569,6 +569,7 @@ def test_a_rejected_plant_fit_neither_grades_margins_nor_sets_ceilings():
     notes = [n for n in sec.notes if n.startswith("roll:")]
     shown = [n for n in notes if "open loop (fit)" in n or "virtual AutoTune ->" in n or "heli AutoTune ceilings" in n]
     assert any("open loop (fit)" in n for n in shown) and any("virtual AutoTune ->" in n for n in shown)
+    assert any("heli AutoTune ceilings" in n for n in shown)
     assert all(why in n for n in shown), shown
     assert tune_fuse.analysis_to_dict(a)["per_axis"]["roll"]["margins"]["fit_rejected"].startswith(why)
 

@@ -379,11 +379,12 @@ result named `refused` — never a pass — and the exit code is unaffected.
    residual is ≥ 3 dB (the in-band measured margin is still quoted; read that instead). A
    fit that fails the residual gate also sets no margin ceilings ("margin ceilings not
    applied"). A rejected fit's row in the `margins` table is labelled
-   `fit x C(z), REJECTED: <reason>` (numbers kept as evidence), its notes say so, and the
-   JSON carries the reason in `margins.fit_rejected` (`null` when the fit was used). Tier B
-   is used only when the band
-   contains the crossover and the fit residual is below 3 dB; the note says when it was
-   not, and why.
+   `fit x C(z), REJECTED: <reason>` (numbers kept as evidence) and its notes say so; in
+   `--json` the same flag is in that row label, in the notes and in `evidence.fit_rejected`
+   on the `<axis> gain margin` / `<axis> phase margin` results. The library's
+   `tune_fuse.analysis_to_dict` also carries `per_axis.<axis>.margins.fit_rejected` (`null`
+   when the fit was used). Tier B is used only when the band contains the crossover and the
+   fit residual is below 3 dB; the note says when it was not, and why.
 7. **`autotune`** — per session and axis: the completed steps, the twitch outcomes
    re-derived from `Targ/Min/Max` with the log's AGGR, the backoff assumed and the backoff
    *observed* in the log (`RP` of the ANGLE rows ÷ the last RATE_P_UP row), and the
