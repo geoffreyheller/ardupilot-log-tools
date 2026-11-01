@@ -18,6 +18,7 @@
     alog schema                            # the JSON output contract
     alog docs                              # the guide, rules, recipes and references
     alog docs pitfalls                     # one of them, matching this version
+    alog install-skill --dir ~/.agents/skills   # the agent skill, for this version
 
 Output is markdown by default, JSON with --json. Exit codes: 0 pass, 1 warn, 2 fail,
 3 the input could not be analysed (missing file, not a dataflash log, unknown check,
@@ -31,6 +32,7 @@ import io
 import json
 import math
 import os
+import re
 import sys
 
 from . import __version__
@@ -995,6 +997,55 @@ def cmd_docs(args):
     return 0
 
 
+def _tree(root):
+    """{relative path: bytes} of every file under root."""
+    out = {}
+    for base, _, names in os.walk(root):
+        for n in names:
+            path = os.path.join(base, n)
+            with open(path, "rb") as fh:
+                out[os.path.relpath(path, root).replace(os.sep, "/")] = fh.read()
+    return out
+
+
+def cmd_install_skill(args):
+    import shutil
+    from . import docs
+    try:
+        src, where = docs.skill_dir()
+    except FileNotFoundError as exc:
+        raise InputError(str(exc))
+    parent = os.path.abspath(os.path.expanduser(args.dir))
+    dest = os.path.join(parent, docs.SKILL_NAME)
+    want = _tree(src)
+    action = "installed"
+    if os.path.exists(dest):
+        have = _tree(dest) if os.path.isdir(dest) else {}
+        if have == want:
+            action = "unchanged"
+        else:
+            changed = sorted(k for k in set(want) | set(have) if want.get(k) != have.get(k))
+            skill_md = have.get("SKILL.md", b"").decode("utf-8", "replace")
+            ours = os.path.isdir(dest) and re.search(r"^name: %s\s*$" % re.escape(docs.SKILL_NAME), skill_md, re.M)
+            if not ours:
+                raise InputError(f"{dest} exists and is not the {docs.SKILL_NAME} skill; not touching it")
+            if not args.force:
+                raise InputError(f"{dest} holds a different version of the skill ({len(changed)} file{'s' if len(changed) != 1 else ''} differ{'' if len(changed) != 1 else 's'}: "
+                                 f"{', '.join(changed[:5])}{', ...' if len(changed) > 5 else ''}); "
+                                 "pass --force to replace it")
+            shutil.rmtree(dest)
+            action = "replaced"
+    if action != "unchanged":
+        os.makedirs(parent, exist_ok=True)
+        shutil.copytree(src, dest)
+    if args.json:
+        _emit_json(_envelope("install-skill", skill=docs.SKILL_NAME, source=where, path=dest,
+                             action=action, files=sorted(want)))
+    else:
+        print(f"{action}: {dest} ({len(want)} files, from the {where} copy of ardupilot-log-tools {__version__})")
+    return 0
+
+
 # ------------------------------------------------------------------ main
 
 def build_parser():
@@ -1114,6 +1165,12 @@ def build_parser():
     q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     q = sub.add_parser("schema", help="print the JSON output contract, check names and thresholds")
     q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
+    q = sub.add_parser("install-skill", help="copy the agent skill for this version into an agent's skills directory")
+    q.add_argument("--dir", required=True, metavar="PATH",
+                   help="the skills directory to install into, e.g. ~/.agents/skills or .claude/skills "
+                        "(the README lists each agent's); the skill goes in PATH/ardupilot-log-analysis")
+    q.add_argument("--force", action="store_true", help="replace a different version of this skill already there")
+    q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     q = sub.add_parser("docs", help="the guide, rules, recipes and references, as shipped with this version")
     q.add_argument("topic", nargs="?", help="a topic from the list `alog docs` prints, e.g. pitfalls")
     q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
@@ -1141,7 +1198,7 @@ def main(argv=None):
     dispatch = {"info": cmd_info, "integrity": cmd_integrity, "types": cmd_types, "fields": cmd_fields,
                 "dump": cmd_dump, "params": cmd_params, "compare": cmd_compare, "fft": cmd_fft,
                 "files": cmd_files, "schema": cmd_schema, "hover": cmd_hover, "tune": cmd_tune,
-                "docs": cmd_docs}
+                "docs": cmd_docs, "install-skill": cmd_install_skill}
     try:
         if args.cmd in dispatch:
             return dispatch[args.cmd](args)

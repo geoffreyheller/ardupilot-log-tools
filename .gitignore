@@ -32,3 +32,4 @@ dist/
 
 # Docs copied into the package by setup.py at build time (never committed)
 dflog/docs/
+dflog/skill/

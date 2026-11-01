@@ -272,6 +272,38 @@ def test_shipped_docs_use_the_installed_command():
     assert "`python alog.py` is it without installing" in docs.read("guide")
 
 
+def test_install_skill_copies_this_versions_skill_and_never_clobbers():
+    import shutil
+    from dflog import docs
+    src, _ = docs.skill_dir()
+    parent = tempfile.mkdtemp(prefix="dflog-skill-")
+    dest = os.path.join(parent, "ardupilot-log-analysis")
+    code, doc = run_json("install-skill", "--dir", parent)
+    assert code == 0 and doc["action"] == "installed" and doc["path"] == dest
+    assert sorted(doc["files"]) == sorted(os.path.relpath(os.path.join(b, n), src).replace(os.sep, "/")
+                                          for b, _, ns in os.walk(src) for n in ns)
+    code, doc = run_json("install-skill", "--dir", parent)
+    assert code == 0 and doc["action"] == "unchanged"
+    with open(os.path.join(dest, "SKILL.md"), "a", encoding="utf-8") as fh:
+        fh.write("local edit\n")
+    code, out, err = run("install-skill", "--dir", parent)
+    assert code == 3 and "--force" in err and "SKILL.md" in err
+    code, doc = run_json("install-skill", "--dir", parent, "--force")
+    assert code == 0 and doc["action"] == "replaced"
+    with open(os.path.join(dest, "SKILL.md"), encoding="utf-8") as fh:
+        assert "local edit" not in fh.read()
+    # a folder of the same name that is not this skill is never deleted, even with --force
+    other = tempfile.mkdtemp(prefix="dflog-other-")
+    os.makedirs(os.path.join(other, "ardupilot-log-analysis"))
+    with open(os.path.join(other, "ardupilot-log-analysis", "notes.txt"), "w") as fh:
+        fh.write("mine")
+    code, out, err = run("install-skill", "--dir", other, "--force")
+    assert code == 3 and "not the ardupilot-log-analysis skill" in err
+    assert os.listdir(os.path.join(other, "ardupilot-log-analysis")) == ["notes.txt"]
+    shutil.rmtree(parent)
+    shutil.rmtree(other)
+
+
 def test_docs_unknown_topic_is_exit_3_naming_the_topics():
     code, out, err = run("docs", "no-such-topic")
     assert code == 3 and "no-such-topic" in err and "pitfalls" in err
