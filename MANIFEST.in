@@ -3,3 +3,5 @@
 include RULES.md GUIDE.md SKILLS.md
 include templates/log-analysis-template.md
 recursive-include reference *.md
+# ...and the agent skill, which setup.py copies whole into dflog/skill/
+recursive-include skills *

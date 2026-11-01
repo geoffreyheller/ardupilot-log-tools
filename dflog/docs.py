@@ -26,6 +26,23 @@ _PKG = os.path.dirname(os.path.abspath(__file__))
 INSTALLED_DIR = os.path.join(_PKG, "docs")
 REPO_ROOT = os.path.dirname(_PKG)
 
+# The agent skill: built from the docs by tools/build_skill.py, shipped whole in the wheel
+# (setup.py copies it to dflog/skill/<SKILL_NAME>), installed by `alog install-skill`.
+SKILL_NAME = "ardupilot-log-analysis"
+SKILL_SOURCE = os.path.join("skills", SKILL_NAME)
+INSTALLED_SKILL = os.path.join(_PKG, "skill", SKILL_NAME)
+
+
+def skill_dir():
+    """(path, where) of the skill folder this installation carries: the copy inside the
+    wheel ("installed"), else the repository's ("repository"). FileNotFoundError if neither."""
+    if os.path.isfile(os.path.join(INSTALLED_SKILL, "SKILL.md")):
+        return INSTALLED_SKILL, "installed"
+    path = os.path.join(REPO_ROOT, SKILL_SOURCE)
+    if os.path.isfile(os.path.join(path, "SKILL.md")):
+        return path, "repository"
+    raise FileNotFoundError(f"no {SKILL_NAME} skill in this installation (looked in {INSTALLED_SKILL} and {path})")
+
 
 def sources(root=REPO_ROOT):
     """{topic: absolute path} of the canonical files under a repository root.

@@ -28,7 +28,7 @@ check list and threshold table. Non-finite floats are `null`. Bytes are Latin-1 
 }
 ```
 
-`log` is absent for `schema` and `docs`; `window` and `flights` are present only when a window was
+`log` is absent for `schema`, `docs` and `install-skill`; `window` and `flights` are present only when a window was
 used.
 
 `window.hz_floor` is present when the `rpm` detector chose the window: the
@@ -128,6 +128,7 @@ a thing.
 | `files` | `files: [{name, bytes}]`, `written: [path]` |
 | `schema` | `exit_codes`, `result`, `section`, `integrity`, `window`, `flights`, `per_flight`, `checks`, `window_methods`, `compare`, `tune`, `thresholds`, `tune_constants: {name: {value, source, note}}` (the PID-tuning algorithm constants, every one with its provenance) |
 | `docs` | no `log`: `where` (`installed` = the copy inside the wheel, `repository` = a clone read in place) and `topics: [{topic, title}]`; with a topic: `topic`, `text` (the markdown, verbatim). An unknown topic is the error document, exit 3, naming the topics |
+| `install-skill` | no `log`: `skill` (the name), `source` (`installed` = the copy inside the wheel, `repository` = a clone), `path` (where it now is), `action` (`installed`, `unchanged` or `replaced`), `files` (relative paths). A different version already there without `--force`, or a folder that is not this skill, is the error document, exit 3 |
 
 ## Errors
 

@@ -11,8 +11,9 @@ repo), then runs `tests/run_all.py` and the `alog.py --help` smoke test.
 It also builds the package the way a release would (`uv build`: the sdist, then the wheel
 from the sdist) and, for each Python version, installs that wheel into another throwaway
 environment and runs it from a temporary directory outside the repo: `alog --version`,
-`alog docs` (which must read the copy inside the wheel, not the repo), and `alog info` /
-`alog all --json` on the committed fixture with the cache in a temporary directory. An
+`alog docs` and `alog install-skill` (which must use the copies inside the wheel, not the
+repo), and `alog info` / `alog all --json` on the committed fixture with the cache in a
+temporary directory. An
 editable install or a clone hides missing package data; this does not. Exit code is 0
 when every step passed, 1 otherwise, 3 when uv is not available.
 
@@ -51,6 +52,8 @@ def _installed_steps(cache):
         ("wheel: --version", ["--version"], lambda rc, out: rc == 0 and "ardupilot-log-tools" in out),
         ("wheel: docs", ["--json", "docs"], docs_are_installed),
         ("wheel: docs topic", ["docs", "pitfalls"], lambda rc, out: rc == 0 and out.startswith("# Pitfalls")),
+        ("wheel: install-skill", ["--json", "install-skill", "--dir", os.path.join(os.path.dirname(cache), "skills")],
+         lambda rc, out: rc == 0 and json.loads(out)["source"] == "installed" and "SKILL.md" in json.loads(out)["files"]),
         ("wheel: info", ["--cache-dir", cache, "info", FIXTURE], lambda rc, out: rc == 0),
         ("wheel: all --json", ["--cache-dir", cache, "--json", "all", FIXTURE], report),
     ]
