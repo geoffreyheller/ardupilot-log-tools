@@ -14,7 +14,7 @@ description: >-
 license: MIT
 compatibility: Requires Python 3.9+ and either uv, pipx or a pip-installed alog; on first use, network access and git to fetch it. Windows, Linux and macOS.
 metadata:
-  version: "2.1.0.dev0"
+  version: "2.1.0"
   source: "https://github.com/geoffreyheller/ardupilot-log-tools"
 ---
 

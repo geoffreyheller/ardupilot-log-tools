@@ -1,8 +1,13 @@
 # Changelog
 
-## 2.1.0 (unreleased)
+## 2.1.0 (2026-10-31)
 
 Packaging as an installable, agent-neutral skill (issue #24).
+
+Not on PyPI. Install from the tag, `pip install
+git+https://github.com/geoffreyheller/ardupilot-log-tools@v2.1.0` (or `uvx --from ...@v2.1.0
+alog`), or from the wheel attached to the GitHub release. The skill's run scripts pin this
+tag.
 
 - **Agent skill** `skills/ardupilot-log-analysis/` in the open Agent Skills format:
   `SKILL.md`, the tool's documentation in `references/` (generated from the repo docs by
