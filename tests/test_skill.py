@@ -164,6 +164,150 @@ def test_strip_fails_loudly_when_the_heading_is_gone():
         raise AssertionError("a missing strip heading was ignored")
 
 
+# --------------------------------------------- the skill quotes the real CLI (S3)
+
+def _quoted_commands(text):
+    """Every `alog ...` the text quotes: code-block lines and inline code spans, up to a
+    comment, a pipe or a redirect, as token lists after `alog`."""
+    out = []
+    for m in re.finditer(r"(?:^[ \t]*|`)alog((?: [^`\n]*)?)", text, re.M):
+        toks = []
+        for tok in m.group(1).split():
+            if tok.startswith("#") or tok in ("|", ">", ">>", "&&"):
+                break
+            toks.append(tok)
+        out.append(toks)
+    return out
+
+
+def _options(parser):
+    """{option string: takes a value} for one argparse parser."""
+    return {s: a.nargs != 0 for a in parser._actions for s in a.option_strings}
+
+
+def _check_command(toks, root, subs):
+    """None if `alog <toks>` uses real commands and flags, else why not."""
+    from dflog.flight import WINDOW_METHODS
+    glob = _options(root)
+    placeholder = re.compile(r"^(…|\.\.\.|[A-Z][A-Z0-9_]*|<.*>|\[.*\]?|.*\|.*)$")
+    i = 0
+    while i < len(toks) and toks[i].startswith("-"):           # global flags
+        flag = toks[i].split("=")[0]
+        if flag not in glob:
+            return f"{flag} is not a global option"
+        i += 2 if glob[flag] and "=" not in toks[i] else 1
+    if i == len(toks) or placeholder.match(toks[i]):
+        return None
+    cmd = toks[i]
+    if cmd not in subs:
+        return f"no subcommand {cmd!r}"
+    opts = _options(subs[cmd])
+    rest = toks[i + 1:]
+    for j, tok in enumerate(rest):
+        flag = tok.strip("[]`,.;:)").split("=")[0]
+        if not flag.startswith("--"):
+            continue
+        if flag not in opts:
+            where = " (a global option: it goes before the subcommand)" if flag in glob else ""
+            return f"{cmd} has no option {flag}{where}"
+        if flag == "--window" and j + 1 < len(rest):
+            value = rest[j + 1].strip("`,.;:)")
+            ok = (value in WINDOW_METHODS or placeholder.match(value)
+                  or re.fullmatch(r"hover:\d+|[\d.]+:[\d.]+", value))
+            if not ok:
+                return f"--window {value} is not a window method"
+    return None
+
+
+def test_every_quoted_alog_command_is_real():
+    from dflog.cli import build_parser
+    root = build_parser()
+    subs = next(a for a in root._actions if a.__class__.__name__ == "_SubParsersAction").choices
+    docs_outside = [os.path.join(ROOT, "README.md"), os.path.join(ROOT, "AGENTS.md")]
+    bad, seen = [], 0
+    for path in [os.path.join(SKILL, rel) for rel in _files() if rel.endswith(".md")] + docs_outside:
+        with open(path, encoding="utf-8") as fh:
+            text = fh.read()
+        for toks in _quoted_commands(text):
+            seen += 1
+            why = _check_command(toks, root, subs)
+            if why:
+                bad.append(f"{os.path.relpath(path, ROOT)}: `alog {' '.join(toks)}`: {why}")
+    assert seen > 100, seen                 # the extractor still finds the commands
+    assert not bad, "\n".join(bad)
+
+
+def test_the_command_check_catches_drift():
+    from dflog.cli import build_parser
+    root = build_parser()
+    subs = next(a for a in root._actions if a.__class__.__name__ == "_SubParsersAction").choices
+    assert _check_command(["info", "flight.bin"], root, subs) is None
+    assert _check_command(["--cache-dir", "DIR", "info", "x.bin"], root, subs) is None
+    assert _check_command(["all", "x.bin", "--window", "hover:2", "--flight", "all"], root, subs) is None
+    assert "no subcommand" in _check_command(["motor", "x.bin"], root, subs)
+    assert "no option --windwo" in _check_command(["motors", "x.bin", "--windwo", "rpm"], root, subs)
+    assert "goes before" in _check_command(["info", "x.bin", "--no-cache"], root, subs)
+    assert "not a window method" in _check_command(["vibe", "x.bin", "--window", "hovr"], root, subs)
+
+
+def _exit_code_claims(text):
+    """{code: meaning} from 'Exit codes: 0 pass, 1 warn, ...' sentences."""
+    claims = {}
+    for m in re.finditer(r"Exit codes?: ((?:\d [^,.]+(?:, |\.))+)", text):
+        for code, meaning in re.findall(r"(\d) ([^,.]+)", m.group(1)):
+            claims[int(code)] = meaning.strip()
+    return claims
+
+
+def test_quoted_exit_codes_match_the_schema():
+    from dflog.cli import main
+    import io
+    import json
+    from contextlib import redirect_stdout
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        main(["--json", "schema"])
+    schema = {int(k): v for k, v in json.loads(buf.getvalue())["exit_codes"].items()}
+    word = {0: "pass", 1: "warn", 2: "fail", 3: "input"}
+    for rel in ("SKILL.md", "references/recipes.md"):
+        claims = _exit_code_claims(_read(rel))
+        assert set(claims) == set(schema), (rel, claims, schema)
+        for code, meaning in claims.items():
+            assert word[code] in meaning.lower() and word[code] in schema[code].lower(), (rel, code, meaning)
+
+
+def _alog_json(*argv):
+    from dflog.cli import main
+    import io
+    import json
+    from contextlib import redirect_stdout
+    buf = io.StringIO()
+    with redirect_stdout(buf):
+        main(["--no-cache", "--json"] + list(argv))
+    return json.loads(buf.getvalue())
+
+
+def test_documented_json_keys_are_the_ones_alog_emits():
+    import tempfile
+    from synthlog import standard_log
+    import test_cli
+    tmp = tempfile.mkdtemp(prefix="dflog-skill-")
+    one = standard_log(n=200).write(os.path.join(tmp, "one.bin"))
+    two = test_cli._two_flight_log(os.path.join(tmp, "two.bin"))
+    contract = _read("references/json-output.md")
+    blocks = re.findall(r"```json\n(.*?)```", contract, re.S)
+    envelope = set(re.findall(r'^  "([a-z_]+)":', blocks[0], re.M))
+    report = set(re.findall(r'^"([a-z_]+)":', blocks[1], re.M))
+    got = set(_alog_json("all", one))
+    assert envelope | report == got, f"documented {sorted(envelope | report)} != emitted {sorted(got)}"
+    # `--flight all`: the third example lists what replaces `sections`
+    flight_all = set(re.findall(r'^"([a-z_]+)":', blocks[2], re.M))
+    got = set(_alog_json("all", two, "--flight", "all"))
+    assert envelope | flight_all == got, f"documented {sorted(envelope | flight_all)} != emitted {sorted(got)}"
+    assert "sections" not in got
+    assert "`per_flight`" in _read("SKILL.md") and "`sections`" in _read("SKILL.md")
+
+
 def test_rules_reference_has_no_repository_development_section():
     rules = _read("references/rules.md")
     assert "## 4. Analysis discipline" in rules and "Changing the tools" not in rules

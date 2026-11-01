@@ -61,7 +61,7 @@ them all with `--flight all`.
                       "channel_map": { "M1": "C2", "M2": "C3", "M3": "C4", "M4": "C1" },
                       "map_source": "SERVOn_FUNCTION" },
         "severity": 20, "window": null,
-        "source": "measured on the development logs; see reference/thresholds.md" } ],
+        "source": "measured on the development logs; see `alog docs thresholds` (reference/thresholds.md)" } ],
     "tables": [ { "name": "trim", "columns": ["axis", "trim (us)", "reads as"],
                   "rows": [["roll", 34.3, "mean(left) - mean(right)"], ...] } ],
     "notes": [ "Mix: Quad/X\nChannel -> motor map from SERVOn_FUNCTION: M1=C2, ..." ] }
