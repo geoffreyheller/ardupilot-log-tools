@@ -316,13 +316,14 @@ skills/ardupilot-log-analysis/
   `dataflash-format.md` (reachable through `alog docs`), `tools/`, the tests. Code paths
   such as `dflog/checks.py::T` stay in the text as provenance; the header says they refer
   to the repository.
-- [~] Validation: `skills-ref validate` was **not run** (fetching and running it was
-  blocked in the session that built this). `tests/test_skill.py` checks the spec's
-  frontmatter rules itself (name format, length and folder match; description ≤ 1024;
-  compatibility ≤ 500; allowed keys), plus: the skill is current, no vendor names, slash
+- [x] Validation: the spec's reference validator passes: `uvx --from skills-ref
+  agentskills validate skills/ardupilot-log-analysis` → "Valid skill" (skills-ref 0.1.1,
+  2026-10-31; the PyPI package's command is `agentskills`, not `skills-ref`). Its
+  `read-properties` parses the same name, 794-character description, compatibility and
+  metadata as `tests/test_skill.py`, which also checks the frontmatter rules itself (so
+  the suite needs no download), plus: the skill is current, no vendor names, slash
   commands or agent tool names, every linked file and `alog docs` topic exists, and the
-  scripts pin the package version and parse. Run `skills-ref validate
-  skills/ardupilot-log-analysis` once by hand.
+  scripts pin the package version and parse.
 - [x] Run scripts `scripts/alog.sh` / `alog.ps1`: an installed `alog` whose version matches
   the pin, else `uvx` / `uv tool run`, else `pipx run`, else a mismatched installed `alog`
   with a warning, else the install line and exit 3. The pin is the package version and
