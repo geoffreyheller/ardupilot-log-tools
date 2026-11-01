@@ -86,6 +86,67 @@ python alog.py --help                    # or, without installing anything: the 
 
 ---
 
+## Use as an agent skill
+
+`skills/ardupilot-log-analysis/` is an agent skill in the open
+[Agent Skills](https://agentskills.io) format: a `SKILL.md` that tells any coding agent how
+to run `alog` and read its output, the tool's own documentation in `references/`, and
+`scripts/alog.sh` / `alog.ps1`, which run the matching `alog` (installing it through `uvx`
+or `pipx` on first use). It contains nothing specific to one agent. Install it once, at
+user level, and every project sees it; or at project level, to share it with a repository.
+
+Pick one:
+
+```bash
+# GitHub CLI 2.90+ (`gh skill` is in preview): any agent it knows, at user or project scope
+gh skill install geoffreyheller/ardupilot-log-tools ardupilot-log-analysis --agent github-copilot --scope user
+
+# From an installed alog: copies the skill that matches its version, offline
+alog install-skill --dir ~/.agents/skills
+
+# Gemini CLI's own installer (add --scope workspace for the project)
+gemini skills install https://github.com/geoffreyheller/ardupilot-log-tools.git --path skills/ardupilot-log-analysis
+```
+
+In Claude Code the repository is also a plugin marketplace
+(`.claude-plugin/marketplace.json`, outside the skill folder):
+
+```text
+/plugin install ardupilot-log-analysis --marketplace geoffreyheller/ardupilot-log-tools
+```
+
+On Claude Code before 2.1.275, add the marketplace first:
+`/plugin marketplace add geoffreyheller/ardupilot-log-tools`, then
+`/plugin install ardupilot-log-analysis@ardupilot-log-tools`.
+
+Or copy the folder yourself into a skills directory from this table. `~/.agents/skills/`
+alone covers Copilot, Codex, Cursor and Gemini CLI; Claude Code reads `~/.claude/skills/`.
+
+| agent | project skills directory | user skills directory | its own installer |
+|---|---|---|---|
+| Claude Code | `.claude/skills/` | `~/.claude/skills/` | the plugin marketplace above |
+| GitHub Copilot (CLI, VS Code agent mode, cloud agent) | `.github/skills/`, `.agents/skills/`, `.claude/skills/` | `~/.copilot/skills/`, `~/.agents/skills/` | `gh skill install --agent github-copilot` |
+| OpenAI Codex | `.agents/skills/`, from the working directory up to the repository root | `~/.agents/skills/` | `$skill-installer`, asked for this repository |
+| Cursor | `.agents/skills/`, `.cursor/skills/` | `~/.agents/skills/`, `~/.cursor/skills/` | — |
+| Gemini CLI | `.agents/skills/`, `.gemini/skills/` | `~/.agents/skills/`, `~/.gemini/skills/` | `gemini skills install` (above) |
+
+Checked against each vendor's documentation on 2026-10-31: [Claude Code
+plugins](https://code.claude.com/docs/en/plugin-marketplaces),
+[Copilot](https://docs.github.com/en/copilot/how-tos/use-copilot-agents/cloud-agent/create-skills),
+[Codex](https://learn.chatgpt.com/docs/build-skills), [Cursor](https://cursor.com/docs/skills),
+[Gemini CLI](https://geminicli.com/docs/cli/skills/). These paths change; when one stops
+working, the vendor page is the authority. Tried on this repository's development machine
+(Windows) the same day: `alog install-skill`, `gh skill install` from GitHub and with
+`--from-local` (each into a scratch directory; the installed skill still passes the
+reference validator), and `claude plugin validate .` on the marketplace. Not tried: an
+install into each agent's own directory, and every agent but Claude Code, none of which
+were installed there.
+
+An agent without skill support can still use it: put `alog` on `PATH`
+(`pip install git+https://github.com/geoffreyheller/ardupilot-log-tools`) and paste the
+body of `SKILL.md` (everything after the frontmatter) into that agent's instructions file.
+Its `references/` are the same documents `alog docs` prints.
+
 ## Use
 
 ```bash
@@ -234,7 +295,9 @@ GUIDE.md                  the operating guide for an agent analysing a log
 CLAUDE.md                 imports GUIDE.md; adds repository-development notes
 SKILLS.md                 recipes: the commands, lines to read and validation flight for each common question
 AGENTS.md                 pointer for other agent frameworks
-setup.py / MANIFEST.in    build hook: copies the docs above and reference/ into the wheel
+setup.py / MANIFEST.in    build hook: copies the docs above, reference/ and the skill into the wheel
+.claude-plugin/marketplace.json
+                          Claude Code plugin marketplace: the one per-agent file, outside the skill
 dflog/
   parser.py               .bin reader + Diagnostics + on-disk cache (fails loudly)
   textlog.py              .log text-export reader (flagged as second-class)

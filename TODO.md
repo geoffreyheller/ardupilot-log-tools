@@ -376,22 +376,41 @@ the skill fails CI.
 Install paths and manifest formats change often; verify each one when writing it and put
 the date beside it in the README table.
 
-- [ ] README "Use as an agent skill": a table of agent → skills directory (user-level and
-  project-level) → install command (copy, symlink, or the agent's own install-from-repo
-  command). Start with the agents that read the open SKILL.md format: Claude Code,
-  GitHub Copilot (CLI and VS Code agent mode), OpenAI Codex, Cursor, Gemini CLI.
-- [ ] A one-shot installer, `alog install-skill [--dir PATH]`, that copies the skill
-  folder shipped inside the wheel to a given directory. No agent knowledge in it: the user
-  (or README table) supplies the path. This keeps installation to one command on every OS
-  without a curl-pipe-shell script.
-- [ ] Claude Code: `.claude-plugin/plugin.json` + `marketplace.json` at the repo root
-  pointing at `skills/ardupilot-log-analysis/`, so `/plugin marketplace add
-  geoffreyheller/ardupilot-log-tools` works.
-- [ ] Other agents with an install-from-repo mechanism: one adapter file each, outside the
-  skill folder, none required by the others.
-- [ ] Agents without SKILL.md support: `AGENTS.md` already serves them when the repo is the
-  workspace; for other workspaces, document pasting the `SKILL.md` body into that agent's
-  instructions file.
+*(Worked 2026-10-31 on branch `s4-agent-install`.)*
+
+- [x] README "Use as an agent skill": agent → project directory → user directory → its own
+  installer, for Claude Code, GitHub Copilot, Codex, Cursor and Gemini CLI, each read
+  from the vendor's page on 2026-10-31 and linked. Finding: `~/.agents/skills/` (and
+  project `.agents/skills/`) is read by Copilot, Codex, Cursor and Gemini CLI alike; Codex
+  no longer documents `~/.codex/skills`. Claude Code reads `~/.claude/skills/`.
+- [x] Install commands. `gh skill install` (GitHub CLI 2.90+, preview) installs from a
+  GitHub repo for ~50 agents, finds `skills/*/SKILL.md` by the spec's convention and pins
+  tags, so it is the README's first line rather than anything built here.
+- [x] `alog install-skill --dir PATH [--force]`: copies the skill shipped inside the wheel
+  (`setup.py` now copies `skills/` to `dflog/skill/`; a clone uses the repo's) to
+  `PATH/ardupilot-log-analysis`. Same files → `unchanged`; different → exit 3 naming them
+  unless `--force`; and it never deletes a folder whose `SKILL.md` is not this skill.
+  `--dir` is required: no agent knowledge in the command.
+- [x] Claude Code: `.claude-plugin/marketplace.json` only, no `plugin.json`. Its entry's
+  `source` is `./skills/ardupilot-log-analysis`, so the skill folder is the plugin and gets
+  no Claude-specific file, and the repo-root `CLAUDE.md` is not inside the plugin (the
+  validator warns about one). `build_skill.py` sets its `version`; `test_skill.py` fails if
+  stale. `claude plugin validate .` passes.
+- [x] Other agents: no adapter file needed. Gemini installs from the git URL with `--path`;
+  Copilot, Codex and Cursor read the shared directory, which `gh skill`, `alog
+  install-skill` or a copy fill. Cursor's own `.cursor-plugin/marketplace.json` route was
+  not built.
+- [x] Agents without skill support: README says to put `alog` on `PATH` and paste the
+  `SKILL.md` body into the agent's instructions file.
+
+Tried on Windows, 2026-10-31: `alog install-skill` (install, unchanged, conflict,
+`--force`, foreign folder), `gh skill install` from GitHub `main` and `--from-local`
+(each into a scratch `--dir`; the result still passes `agentskills validate`), `claude
+plugin validate .`, and the wheel's `install-skill` in `tools/ci_local.py`. **Not tried:**
+installing into any agent's real directory, a Claude Code plugin install, and every agent
+but Claude Code (none installed on the development machine). So the "done when" below
+holds for the table's dating, not for "each path tried"; S5's cross-agent run is where the
+rest gets tried.
 
 **Done when:** the README table is dated and each listed path has been tried.
 
