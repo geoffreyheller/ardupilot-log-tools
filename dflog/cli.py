@@ -997,8 +997,8 @@ def cmd_docs(args):
 
 # ------------------------------------------------------------------ main
 
-def main(argv=None):
-    _utf8_stdout()
+def build_parser():
+    """The argparse tree. main() parses with it; tests check every documented command against it."""
     ap = argparse.ArgumentParser(prog="alog", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--version", action="version", version=f"ardupilot-log-tools {__version__}")
@@ -1118,6 +1118,12 @@ def main(argv=None):
     q.add_argument("topic", nargs="?", help="a topic from the list `alog docs` prints, e.g. pitfalls")
     q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
 
+    return ap
+
+
+def main(argv=None):
+    _utf8_stdout()
+    ap = build_parser()
     args = ap.parse_args(argv)
     # --json may be given before or after the subcommand
     args.json = bool(getattr(args, "json", False)) or "--json" in (argv if argv is not None else sys.argv[1:])
