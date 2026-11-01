@@ -88,5 +88,5 @@ comparison invalid.
 
 ## Documentation drift to fix
 
-- `<Vehicle>/CLAUDE.md` §N says X; this log shows Y.
+- `<Vehicle>` project notes (`<notes file>` §N) say X; this log shows Y.
 - Param snapshot `<file>.param` is stale for `<param>` — the aircraft now holds `<value>`.
