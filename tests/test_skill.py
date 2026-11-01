@@ -78,6 +78,8 @@ def test_skill_is_current():
              if not os.path.isfile(os.path.join(SKILL, rel)) or _read(rel) != text]
     extra = [f for f in os.listdir(os.path.join(SKILL, "references"))
              if os.path.join("references", f) not in build_skill.build()]
+    stale += [rel for rel, text in build_skill.adapters().items()
+              if open(os.path.join(ROOT, rel), encoding="utf-8").read().replace("\r\n", "\n") != text]
     assert not stale and not extra, f"stale {stale}, not generated {extra}: run python tools/build_skill.py"
 
 

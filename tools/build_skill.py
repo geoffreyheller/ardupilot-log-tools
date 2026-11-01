@@ -9,7 +9,9 @@ skill's own file names (a link to a document the skill leaves out becomes `alog 
 which every install has), strips repository-development sections, and stamps a
 do-not-edit header. In the hand-written SKILL.md it fills the regions between
 `<!-- generated:NAME -->` and `<!-- /generated -->` from GUIDE.md, and sets the pinned
-version in SKILL.md and the run scripts from `dflog/__init__.py`.
+version in SKILL.md, the run scripts and the Claude Code marketplace entry
+(`.claude-plugin/marketplace.json`, the one per-agent adapter, outside the skill folder) from
+`dflog/__init__.py`.
 
 Stdlib only. The output depends on nothing but the sources (no dates, no commit hashes),
 so a second run changes nothing and `--check` can run in CI.
@@ -166,11 +168,21 @@ def scripts():
 
 
 def build():
-    """{path relative to the skill folder: content} for every file this script owns."""
+    """{path relative to the skill folder: content} for every skill file this script owns."""
     files = reference_files()
     files["SKILL.md"] = skill_md()
     files.update(scripts())
     return files
+
+
+def adapters():
+    """{path relative to the repo root: content} for the per-agent files outside the skill."""
+    rel = os.path.join(".claude-plugin", "marketplace.json")
+    text = _read(os.path.join(ROOT, rel))
+    if len(re.findall(r'^      "version": "[^"]*",$', text, re.M)) != 1:
+        raise ValueError(f"{rel}: expected exactly one plugin entry with a \"version\"")
+    text = re.sub(r'^(      "version": )"[^"]*",$', lambda m: f'{m.group(1)}"{version()}",', text, flags=re.M)
+    return {rel: text}
 
 
 def main(argv):
@@ -180,18 +192,22 @@ def main(argv):
     files = build()
     stale = [rel for rel, text in sorted(files.items())
              if not os.path.isfile(os.path.join(SKILL, rel)) or _read(os.path.join(SKILL, rel)) != text]
+    outside = adapters()
+    stale_outside = [rel for rel, text in sorted(outside.items()) if _read(os.path.join(ROOT, rel)) != text]
     refdir = os.path.join(SKILL, "references")
     extra = sorted(os.path.join("references", f) for f in (os.listdir(refdir) if os.path.isdir(refdir) else [])
                    if os.path.join("references", f) not in files)
     if args.check:
         for rel in stale:
             print(f"stale: {rel}")
+        for rel in stale_outside:
+            print(f"stale: {rel} (repo root)")
         for rel in extra:
             print(f"not generated (delete it, or add it to REFERENCES): {rel}")
-        if stale or extra:
+        if stale or stale_outside or extra:
             print("run `python tools/build_skill.py` and commit the result")
             return 1
-        print(f"skill is current ({len(files)} files)")
+        print(f"skill is current ({len(files)} files, {len(outside)} adapter)")
         return 0
     for rel in stale:
         path = os.path.join(SKILL, rel)
@@ -199,10 +215,15 @@ def main(argv):
         with open(path, "w", encoding="utf-8", newline="\n") as fh:
             fh.write(files[rel])
         print(f"wrote {rel}")
+    for rel in stale_outside:
+        with open(os.path.join(ROOT, rel), "w", encoding="utf-8", newline="\n") as fh:
+            fh.write(outside[rel])
+        print(f"wrote {rel}")
     for rel in extra:
         os.remove(os.path.join(SKILL, rel))
         print(f"removed {rel}")
-    print(f"{len(stale)} written, {len(extra)} removed, {len(files) - len(stale)} unchanged")
+    print(f"{len(stale) + len(stale_outside)} written, {len(extra)} removed, "
+          f"{len(files) + len(outside) - len(stale) - len(stale_outside)} unchanged")
     return 0
 
 
