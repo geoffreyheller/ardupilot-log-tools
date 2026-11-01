@@ -19,6 +19,11 @@ specific to developing this repository.
   `tests/test_parser_integrity.py` built with `tests/synthlog.py`, and a row in
   `reference/integrity-codes.md`.
 - New decoding you had to work out → `reference/`, so nobody derives it twice.
+- Changed `RULES.md`, `GUIDE.md`, `SKILLS.md`, `reference/` or the report template → run
+  `python tools/build_skill.py` and commit `skills/` with it. The agent skill's
+  `references/` and the marked regions of its `SKILL.md` are generated from those files;
+  `tests/test_skill.py` fails until they match. Everything else in `SKILL.md` is
+  hand-written, and it must stay agent-neutral (the same test greps for vendor names).
 
 `tools/bootstrap_pymavlink.py` vendors pymavlink from GitHub when you need `mavextra`
 (WMM expected earth field, magfit) or `mavfft_isb.py`. It is not needed for anything in

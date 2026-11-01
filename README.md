@@ -263,6 +263,9 @@ reference/
                           how to calibrate BATT_AMP_PERVLT, and the four methods that don't work
   existing-tools.md       audit of the open-source ecosystem and what was taken from it
 templates/                report template
+skills/ardupilot-log-analysis/
+                          the agent skill (open SKILL.md format): SKILL.md, run scripts, and
+                          references/ generated from the docs by tools/build_skill.py
 tests/
   synthlog.py             a DataFlash writer for building malformed test logs
   test_parser_integrity.py, test_cli.py, test_flights.py, test_checks.py, test_largeprop.py
@@ -274,6 +277,7 @@ tests/
 tools/bootstrap_pymavlink.py (and .sh)   vendor pymavlink when you want mavextra/mavfft_isb
 tools/make_fixture.py   cut a small, scrubbed test fixture out of a real log (tests/fixtures/)
 tools/ci_local.py       local CI: the suite under Python 3.9 and 3.12, and the built wheel
+tools/build_skill.py    regenerate the skill's references/ from the docs (--check: is it current?)
 ```
 
 ---
