@@ -6,8 +6,8 @@
 # install it and exit 3 (the CLI's own "could not run" code). PIN and REF are set by
 # tools/build_skill.py from the package version: REF is the release tag, or main for a
 # development version.
-PIN="2.1.0.dev0"
-REF="main"
+PIN="2.1.0"
+REF="v2.1.0"
 URL="https://github.com/geoffreyheller/ardupilot-log-tools"
 SPEC="git+$URL@$REF"
 

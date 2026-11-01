@@ -448,9 +448,11 @@ rest gets tried.
   at least three agents from different vendors. Record agent, version, date, pass/fail
   per prompt in `tests/agent-eval/RESULTS.md`.
 - [ ] Tune the `description` until prompts 1–4 trigger and 5 does not, on all three.
-- [ ] Release: bump to 2.1.0 (new `docs`, `install-skill`, `--cache-dir`), CHANGELOG
-  entry (drafted as "2.1.0 (unreleased)"), tag `v2.1.0`, publish to PyPI from the tag,
-  attach the wheel and a zipped skill folder to the GitHub release.
+- [~] Release: 2.1.0 bumped, CHANGELOG dated 2026-10-31, tagged `v2.1.0`, and a GitHub
+  release with the wheel, the sdist and a zipped skill folder attached. **Not published
+  to PyPI**, by decision on 2026-10-31; the skill's scripts and the README install from
+  the git tag, which needs git on the machine. Released before the two remaining
+  vendors' runs, so they can install from the tag as the "done when" describes.
   S0 chose trusted publishing from a GitHub Action, but this repository no longer runs
   Actions, so publishing is `uv publish` from a local build with a PyPI API token, run by
   the account owner. `tools/ci_local.py` must pass on the release commit first.

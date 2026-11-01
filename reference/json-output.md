@@ -10,7 +10,7 @@ check list and threshold table. Non-finite floats are `null`. Bytes are Latin-1 
 {
   "schema": "alog/2",
   "tool": "ardupilot-log-tools",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "command": "all",
   "log": {
     "path": "...", "file_name": "...", "file_size": 10475996, "n_messages": 228776,
@@ -133,7 +133,7 @@ a thing.
 ## Errors
 
 ```json
-{ "schema": "alog/2", "tool": "ardupilot-log-tools", "version": "2.0.0", "command": "dump",
+{ "schema": "alog/2", "tool": "ardupilot-log-tools", "version": "2.1.0", "command": "dump",
   "error": "NOPE: not present in this log. Present types: AHR2, ATT, BAT, ...", "exit_code": 3 }
 ```
 
@@ -151,7 +151,7 @@ above with four more keys, so the refusal carries everything the operator needs 
 it (docs/pid-tuning-plan.md section 2.6):
 
 ```json
-{ "schema": "alog/2", "tool": "ardupilot-log-tools", "version": "2.0.0", "command": "tune",
+{ "schema": "alog/2", "tool": "ardupilot-log-tools", "version": "2.1.0", "command": "tune",
   "error": "ERROR: these log files cannot be used for PID tuning.\n  flight.bin: PID_RATE_TOO_LOW - PIDR logged at 10.0 Hz over 77.4-277.8 s; 100 Hz needed (200 Hz recommended) [roll, pitch, yaw]\nSet these ArduCopter parameters and fly the tuning profile (`alog docs skills`, SKILLS.md, 'Recommend PID gains'):\n  LOG_BITMASK       180222 -> 180223  (bit 0 ATTITUDE_FAST + bit 12 PID: loop-rate RATE/PID logging)\n  ...",
   "refusals": [ { "code": "PID_RATE_TOO_LOW", "message": "...", "fix": "Set these ArduCopter parameters ...",
                   "axis": "roll", "log_name": "flight.bin",

@@ -5,8 +5,8 @@
 # install it and exit 3 (the CLI's own "could not run" code). $Pin and $Ref are set by
 # tools/build_skill.py from the package version: $Ref is the release tag, or main for a
 # development version.
-$Pin = '2.1.0.dev0'
-$Ref = 'main'
+$Pin = '2.1.0'
+$Ref = 'v2.1.0'
 $Url = 'https://github.com/geoffreyheller/ardupilot-log-tools'
 $Spec = "git+$Url@$Ref"
 
