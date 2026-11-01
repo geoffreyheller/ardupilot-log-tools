@@ -337,6 +337,10 @@ def test_every_doc_named_in_output_is_an_alog_docs_topic():
     bare = [m.group(0) for m in re.finditer(r"reference/([a-z-]+)\.md", text)
             if f"alog docs {m.group(1)}` (" + m.group(0) not in text[max(0, m.start() - 60):m.end()]]
     assert not bare, sorted(set(bare))
+    # the root documents too: an installed user has only `alog docs`
+    for m in re.finditer(r"\b(RULES|GUIDE|SKILLS)\.md", text):
+        topic = m.group(1).lower()
+        assert f"alog docs {topic}" in text[max(0, m.start() - 40):m.end()], text[max(0, m.start() - 80):m.end() + 40]
 
 
 def test_fft_refuses_when_no_signal_and_says_what_exists():

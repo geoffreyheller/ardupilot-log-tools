@@ -155,7 +155,7 @@ it (docs/pid-tuning-plan.md section 2.6):
 
 ```json
 { "schema": "alog/2", "tool": "ardupilot-log-tools", "version": "2.0.0", "command": "tune",
-  "error": "ERROR: these log files cannot be used for PID tuning.\n  flight.bin: PID_RATE_TOO_LOW - PIDR logged at 10.0 Hz over 77.4-277.8 s; 100 Hz needed (200 Hz recommended) [roll, pitch, yaw]\nSet these ArduCopter parameters and fly the tuning profile (recipes.md, 'Recommend PID gains'):\n  LOG_BITMASK       180222 -> 180223  (bit 0 ATTITUDE_FAST + bit 12 PID: loop-rate RATE/PID logging)\n  ...",
+  "error": "ERROR: these log files cannot be used for PID tuning.\n  flight.bin: PID_RATE_TOO_LOW - PIDR logged at 10.0 Hz over 77.4-277.8 s; 100 Hz needed (200 Hz recommended) [roll, pitch, yaw]\nSet these ArduCopter parameters and fly the tuning profile (`alog docs skills`, recipes.md, 'Recommend PID gains'):\n  LOG_BITMASK       180222 -> 180223  (bit 0 ATTITUDE_FAST + bit 12 PID: loop-rate RATE/PID logging)\n  ...",
   "refusals": [ { "code": "PID_RATE_TOO_LOW", "message": "...", "fix": "Set these ArduCopter parameters ...",
                   "axis": "roll", "log_name": "flight.bin",
                   "requirements": [ { "param": "LOG_BITMASK", "current": 180222, "required": "180223",

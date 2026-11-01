@@ -639,7 +639,7 @@ LOGGING_REQUIREMENTS = [
 ]
 
 LOGGING_FIX_HEADER = ("Set these ArduCopter parameters and fly the tuning profile "
-                      "(SKILLS.md, 'Recommend PID gains'):")
+                      "(`alog docs skills`, SKILLS.md, 'Recommend PID gains'):")
 
 
 def _rule_bitmask(cur, log):
