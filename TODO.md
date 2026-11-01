@@ -270,9 +270,11 @@ Facts that change the draft plan:
   builds the sdist and the wheel from a copy of the files a fresh clone would have (a
   stale ignored `*.egg-info/SOURCES.txt` in the working tree hid a file missing from
   `MANIFEST.in`), installs the wheel into a throwaway environment and runs `--version`,
-  `docs` (must be the installed copy), `info` and `all --json` on the fixture. Not done:
-  Linux, macOS, and `uvx`/`pipx` from the git URL, which needs the branch pushed (or, for
-  `uvx ardupilot-log-tools`, a PyPI release).
+  `docs` (must be the installed copy), `info` and `all --json` on the fixture. Also done,
+  once the branch was pushed: `uvx --from git+https://github.com/...@s1-self-contained-engine
+  alog` from an empty directory (`--version`, `docs` read the installed copy of 14 topics,
+  `info` exit 0). Not done: Linux, macOS, `pipx` (not installed), and `uvx
+  ardupilot-log-tools`, which needs a PyPI release.
 - [ ] Attach the wheel to each GitHub release, for sandboxes with no PyPI access but with
   numpy/pandas/scipy preinstalled (`pip install --no-deps <wheel>`). Moves to S5, which
   makes the first release.
@@ -340,13 +342,31 @@ skills/ardupilot-log-analysis/
 
 ## Phase S3: Keep the skill, the wheel and the docs in step
 
-- [ ] `tests/test_skill.py`:
-  - [ ] `build_skill.py --check` reports no diff (generated files are current).
-  - [ ] every `alog <cmd> --flag` quoted in `SKILL.md` and `references/` parses with the
-    real argparse tree (extend the approach in `test_tune_docs.py`).
-  - [ ] exit codes and JSON top-level keys quoted in the skill match `alog schema`.
-  - [ ] `metadata.version` in `SKILL.md` == `dflog.__version__`, and the run scripts pin it.
-- [ ] Run in CI (after code-quality Phase 1, so CI actually runs it).
+*(Worked 2026-10-31 on branch `s3-skill-docs-sync`.)*
+
+- [x] `tests/test_skill.py`:
+  - [x] the generated files are current (S2's `test_skill_is_current`, the same comparison
+    as `build_skill.py --check`).
+  - [x] every `alog ...` quoted in `SKILL.md`, `references/`, `README.md` and `AGENTS.md`
+    (137 in the skill) uses a real subcommand and real options, checked against
+    `dflog.cli.build_parser()` (extracted from `main()` for this, behaviour unchanged):
+    global options only before the subcommand, the subcommand's own options after it,
+    and a `--window` value that is a real method. A placeholder (`…`, `X`, `<cmd>`) ends
+    the check. Not a full `parse_args`: the docs use placeholder notation that cannot
+    parse, and names are what drift.
+  - [x] exit codes: the "Exit codes: 0 pass, ..." sentences in `SKILL.md` and
+    `recipes.md` name exactly the codes in `alog schema`, with matching meanings.
+    JSON keys: the top-level keys in `json-output.md`'s envelope, check-report and
+    `--flight all` examples are exactly the keys `alog all` and `alog all --flight all`
+    emit on synthetic logs. Compared with real output rather than `alog schema`, whose
+    key list is prose.
+  - [x] `metadata.version` == `dflog.__version__` and the scripts pin it (S2).
+- [x] Run in CI: `tests/run_all.py` finds `test_skill.py` by glob, and `tools/ci_local.py`
+  runs it on Python 3.9 and 3.12.
+
+Checked by breaking each one: an edited `reference/pitfalls.md` fails
+`test_skill_is_current`; renaming `--cache-dir` fails the command check (it names the
+`SKILL.md` line); bumping the version fails the frontmatter, script-pin and currency tests.
 
 **Done when:** changing a canonical doc, a CLI flag or the version without regenerating
 the skill fails CI.
