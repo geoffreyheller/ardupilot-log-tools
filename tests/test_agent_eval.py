@@ -32,6 +32,9 @@ FIX = os.path.join(HERE, "fixtures", FIXTURE)
 # what a faithful answer to each case would be built from
 TOOL_OUTPUT = {"1-triage": [["info"], ["all"]], "2-notch": [["notch"]], "3-motors": [["motors"]],
                "4-pid": [["tune"]]}
+# The window the recipes use (Skill 3, Skill 4) moves some figures, so a faithful answer on it
+# must pass too: the notch FREQ is 60 there, not 55.
+TOOL_OUTPUT_RPM = {"2-notch": [["notch", "--window", "rpm"]], "3-motors": [["motors", "--window", "rpm"]]}
 
 
 def _alog(*argv):
@@ -46,7 +49,7 @@ def _case(case_id):
 
 
 def test_the_tool_output_satisfies_each_case_it_answers():
-    for case_id, runs in TOOL_OUTPUT.items():
+    for case_id, runs in list(TOOL_OUTPUT.items()) + list(TOOL_OUTPUT_RPM.items()):
         text = "\n".join(_alog(cmd[0], FIX, *cmd[1:]) for cmd in runs)
         transcript = f"## Commands\nalog info {FIXTURE}\n\n## Answer\n{text}"
         results = dict(grade.grade(_case(case_id), transcript))
@@ -92,6 +95,33 @@ def test_an_answer_with_its_own_headings_is_read_to_the_end():
     parts = grade.sections(text)
     assert parts["commands"].strip() == "alog info x.bin"
     assert "NO_PID_MESSAGES" in parts["answer"] and "## Summary" in parts["answer"]
+
+
+def test_real_phrasings_from_the_first_claude_code_run_pass():
+    # 2026-10-31: five correct answers failed six criteria on wording alone. Each phrase is
+    # quoted from that run (tests/agent-eval/RESULTS.md); each must now pass.
+    triage = _case("1-triage")
+    answer = ("The file is intact: every byte decoded, no resyncs. It holds one flight, 301 s long "
+              "(76.5-377.4 s, measured from the flight controller's \"not landed\" to \"land complete\" "
+              "events). Standing pitch trim is +58 µs (the tool fails above 25 µs).")
+    verdicts = dict(grade.grade(triage, "## Commands\nalog.sh info x.bin\n\n## Answer\n" + answer))
+    assert verdicts["reports the integrity result"] and verdicts["names the window and its method"]
+    assert grade.first_subcommand('S=.claude/skills/x/scripts/alog.sh; bash $S info largeprop-quad.bin') == "info"
+    assert grade.first_subcommand("S=.claude/skills/x; ls; $S/scripts/alog.sh info a.bin") == "info"
+    notch = dict(grade.grade(_case("2-notch"), "## Answer\n| `INS_HNTCH_FREQ` | 60 | just below the p01 |\n"))
+    assert notch["gives FREQ from the report"]
+    motors = dict(grade.grade(_case("3-motors"),
+                              "## Answer\n| RPM per unit of drive (RPM ÷ duty × voltage) | 2.2% |\n"))
+    assert motors["separates load from drag"]
+
+
+def test_the_widened_criteria_still_fail_an_answer_that_misses_them():
+    verdicts = dict(grade.grade(_case("1-triage"), "## Answer\nLooks fine to me, nice flight.\n"))
+    assert verdicts["reports the integrity result"] is False
+    assert verdicts["names the window and its method"] is False
+    assert grade.first_subcommand("S=notes.txt; cat $S; X=1 alog-like info") is None
+    notch = dict(grade.grade(_case("2-notch"), "## Answer\nSet INS_HNTCH_FREQ to 80.\n"))
+    assert notch["gives FREQ from the report"] is False
 
 
 def test_out_of_scope_case_fails_when_alog_reads_the_ulog():

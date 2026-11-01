@@ -41,9 +41,20 @@ def sections(text):
             "answer": text[answer.end():] if answer else ""}
 
 
+_ASSIGN = re.compile(r"\b([A-Za-z_]\w*)=([\"']?)([^\s;\"']+)\2")
+
+
+def _expand(line):
+    """Substitute this line's own simple variables, so `S=.../alog.sh; bash $S info` reads
+    as the alog.sh invocation it is."""
+    for name, _, value in _ASSIGN.findall(line):
+        line = re.sub(r"\$\{?%s\}?(?!\w)" % re.escape(name), lambda m: value, line)
+    return line
+
+
 def first_subcommand(commands):
     for line in commands.splitlines():
-        m = _ALOG.search(line)
+        m = _ALOG.search(_expand(line))
         if m:
             return m.group(1)
     return None

@@ -21,8 +21,10 @@ CASES = [
         "prompt": f"I flew my quad and this is the log: {FIXTURE}. Is it OK?",
         "criteria": [
             ("runs `alog info` first", "commands", "first", "info"),
-            ("reports the integrity result", "answer", "present", r"integrity"),
-            ("quotes the window method", "answer", "present", r"NOT_LANDED\W*(->|→|to)\W*LAND_COMPLETE"),
+            ("reports the integrity result", "answer", "present", r"integrity|intact|resync|no (integrity )?errors"),
+            # the method string, or the same two events in words ("from 'not landed' to 'land complete'")
+            ("names the window and its method", "answer", "present",
+             r"NOT_LANDED\W*(->|→|to)\W*LAND_COMPLETE|not[ _-]?landed.{0,40}land[ _-]?complete"),
             ("says the log holds one flight", "answer", "present", r"\b(one|1|single)\b[^.\n]{0,20}\bflight"),
             ("surfaces a FAIL with its number", "answer", "present", r"58(\.\d+)?\s*(us|µs|microseconds)|12\.2\d*\s*%"),
             ("states numbers, not only verdicts", "answer", "manual",
@@ -37,7 +39,9 @@ CASES = [
             ("says the notch is disabled", "answer", "present", r"disabled|INS_HNTCH_ENABLE\W{0,4}0\b"),
             # \W{0,12}: "= 3", ": 3", "-> 3" or a table cell, "|     3 |"
             ("gives MODE 3 from the report", "answer", "present", r"INS_HNTCH_MODE\W{0,12}3\b"),
-            ("gives FREQ 55 from the report", "answer", "present", r"INS_HNTCH_FREQ\W{0,12}55\b"),
+            # FREQ is just under the window's p01 fundamental: 55 on the default window, 60 on
+            # --window rpm, which recipe Skill 4 uses (test_agent_eval checks both)
+            ("gives FREQ from the report", "answer", "present", r"INS_HNTCH_FREQ\W{0,12}(55|60)\b"),
             ("names the flight that verifies it", "answer", "present", r"INS_LOG_BAT_MASK|batchfft"),
             ("does not call the notch working", "answer", "absent",
              r"notch (is |was )?(working|tracking)( well| correctly| fine)"),
@@ -52,7 +56,8 @@ CASES = [
             ("runs `alog info` first", "commands", "first", "info"),
             ("uses the servo-to-motor map", "answer", "present", r"SERVO\w*_FUNCTION|channel map|M1\W{0,3}C3"),
             ("quotes the pitch trim", "answer", "present", r"58(\.\d+)?\s*(us|µs|microseconds)"),
-            ("separates load from drag", "answer", "present", r"drive[- ]normali[sz]ed|RPM\s*/\s*\(?duty"),
+            ("separates load from drag", "answer", "present",
+             r"drive[- ]normali[sz]ed|RPM\s*(/|÷)\s*\(?duty|per unit of drive"),
             ("raises a breeze or the heading test", "answer", "present", r"breeze|wind|heading"),
             ("does not call the CG offset proven", "answer", "manual",
              "the CG figure is given as conditional: trim vs heading could not separate CG from a breeze"),

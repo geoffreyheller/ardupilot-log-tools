@@ -440,6 +440,10 @@ rest gets tried.
   passes every automatic criterion, so a tool change that moves a figure fails there, and
   tests the grader. Writing it found a grader bug (an answer's own `## ` headings cut it
   short) and a tool drift (the tune refusal pointed at `SKILLS.md`), both fixed.
+- [~] 1 of 3 vendors done: **Claude Code passed all five** on 2026-10-31 (2.1.316,
+  `claude-opus-5-5`; the skill loaded in cases 1–4 and not in 5). Its first grading
+  failed six criteria on wording alone; the harness was fixed, not the agent (see
+  `RESULTS.md`). Two agents from other vendors still to run.
 - [ ] Run it in each agent's non-interactive mode where one exists, by hand otherwise, on
   at least three agents from different vendors. Record agent, version, date, pass/fail
   per prompt in `tests/agent-eval/RESULTS.md`.
