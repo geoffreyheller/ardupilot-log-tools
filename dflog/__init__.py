@@ -24,4 +24,4 @@ __all__ = ["Log", "FORMAT_CHARS", "Diagnostics", "Issue", "LogIntegrityError", "
            "hover_chunks", "derive_hz_floor", "motors_stopped", "EVENTS", "MODES", "MODE_REASONS",
            "MotorMix", "mix_for", "trim_decomposition", "motor_channels", "FRAME_CLASSES",
            "FRAME_TYPES", "stats", "report", "spectral"]
-__version__ = "2.0.0"
+__version__ = "2.1.0.dev0"
