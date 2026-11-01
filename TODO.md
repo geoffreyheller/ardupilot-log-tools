@@ -293,27 +293,46 @@ skills/ardupilot-log-analysis/
                          matches, else uvx, else pipx; print the install line if neither
 ```
 
-- [ ] `SKILL.md` frontmatter: `name: ardupilot-log-analysis`; a `description` that
-  triggers on ArduPilot / ArduCopter / PX4-adjacent wording users actually type —
-  "dataflash", ".bin log", "flight log", vibration, clipping, harmonic notch, motor
-  balance, CG / trim, GPS glitch, EKF innovations, current sensor, PID tuning — and says
-  what it does not cover (`.tlog` telemetry beyond the text-log path, PX4 `.ulg`);
-  `license: MIT`; `compatibility: requires Python 3.9+ and uv or pipx`; `metadata.version`
-  equal to the package version.
-- [ ] `SKILL.md` body, in this order: install/run line; "run `alog info` first and read
-  the integrity block"; the ten ground rules (guide §2) verbatim; the window table (§3)
-  with the multi-flight rule; a question → recipe index pointing into
-  `references/recipes.md`; the report shape; "delete `.dfcache` or set
-  `ALOG_CACHE_DIR`". Everything else is behind a reference link.
-- [ ] `tools/build_skill.py`: copies the canonical files into `references/`, rewrites
-  `python alog.py` → `alog`, rewrites cross-links (`CLAUDE.md §3` → `guide.md §3`,
-  `reference/X.md` → `X.md`), strips repo-development sections (guide §12, test
-  commands), and stamps a "generated from <commit>, do not edit" header.
-- [ ] Leave out: `TODO.md`, `docs/*-plan.md`, `reference/pid-tuning-sources.md` and
-  `reference/existing-tools.md` (provenance, not operating guidance — reachable through
-  `alog docs`), `tools/`, the tests.
-- [ ] Validate with the spec's reference validator (`skills-ref validate`) and a test that
-  greps the folder for vendor names, slash commands and tool names.
+*(Worked 2026-10-31 on branch `s2-skill-folder`.)*
+
+- [x] `SKILL.md` frontmatter: `name`, a `description` (794 characters) naming the
+  ArduPilot/ArduCopter wording, every check family and what it does not cover (PX4 `.ulg`,
+  MAVLink `.tlog`), `license: MIT`, `compatibility` (Python 3.9+, uv/pipx/pip, and network
+  plus git on first use: the fallback installs from the git URL until there is a PyPI
+  release), `metadata.version` and `metadata.source`.
+- [x] `SKILL.md` body in the planned order, 185 lines. The ground rules (guide §2), the
+  window table and the `--flight` table (§3) are **generated** into marked regions from
+  `GUIDE.md`, not copied by hand, so they cannot drift; the rest is hand-written. Added
+  the two easy-to-get-wrong cases (notch: `FCNS.CF` not `FTN1.PkAvg`; PID: a 10 Hz log is
+  refused) next to the recipe index.
+- [x] `tools/build_skill.py`: copies 11 files into `references/` (the planned nine plus
+  `param-decodings.md` and `current-sensor-calibration.md`, which are operating guidance);
+  rewrites links to the skill's names (`SKILLS.md` → `recipes.md`, `reference/X.md` →
+  `X.md`, a link to a left-out document → `alog docs X`); strips `RULES.md` §5 by heading
+  and fails if the heading is gone; `--check` for CI. Deviation: the header names the
+  source file and repository but **no commit**, because a commit hash would make every
+  build differ and `--check` could never pass. `python alog.py` needed no rewrite (S1).
+- [x] Left out: `TODO.md`, `docs/`, `pid-tuning-sources.md`, `existing-tools.md`,
+  `dataflash-format.md` (reachable through `alog docs`), `tools/`, the tests. Code paths
+  such as `dflog/checks.py::T` stay in the text as provenance; the header says they refer
+  to the repository.
+- [~] Validation: `skills-ref validate` was **not run** (fetching and running it was
+  blocked in the session that built this). `tests/test_skill.py` checks the spec's
+  frontmatter rules itself (name format, length and folder match; description ≤ 1024;
+  compatibility ≤ 500; allowed keys), plus: the skill is current, no vendor names, slash
+  commands or agent tool names, every linked file and `alog docs` topic exists, and the
+  scripts pin the package version and parse. Run `skills-ref validate
+  skills/ardupilot-log-analysis` once by hand.
+- [x] Run scripts `scripts/alog.sh` / `alog.ps1`: an installed `alog` whose version matches
+  the pin, else `uvx` / `uv tool run`, else `pipx run`, else a mismatched installed `alog`
+  with a warning, else the install line and exit 3. The pin is the package version and
+  the git ref is `v<version>` for a release and `main` for a dev build, both set by
+  `build_skill.py`. Tried: the matching-install, uvx and nothing-installed routes of
+  `alog.sh`, and the matching and nothing routes of `alog.ps1`, on Windows. pipx untested
+  (not installed). `.gitattributes` keeps `*.sh` LF so a Windows checkout can run it.
+- [x] Package version bumped 2.0.0 → 2.1.0.dev0 (`pyproject.toml` and
+  `dflog/__init__.py`): main already had features 2.0.0 never had, and the skill needs a
+  version that has `alog docs`. S5's bump to 2.1.0 turns the scripts' ref into the tag.
 
 **Done when:** the folder validates, contains no agent-specific wording, and
 `build_skill.py` is idempotent (running it twice changes nothing).
