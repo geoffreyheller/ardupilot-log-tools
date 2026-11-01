@@ -432,7 +432,7 @@ first and appends `exit code 3`:
 ```
 ERROR: these log files cannot be used for PID tuning.
   circuit-batch.bin: PID_RATE_TOO_LOW - PIDR logged at 10.0 Hz over 77.0-239.1 s; 100 Hz needed (200 Hz recommended) [roll, pitch, yaw]
-Set these ArduCopter parameters and fly the tuning profile (SKILLS.md, 'Recommend PID gains'):
+Set these ArduCopter parameters and fly the tuning profile (`alog docs skills`, SKILLS.md, 'Recommend PID gains'):
   LOG_BITMASK       180222 -> 180223  (bit 0 ATTITUDE_FAST + bit 12 PID: loop-rate RATE/PID logging)
   LOG_FILE_RATEMAX  0  ok
   LOG_BLK_RATEMAX   0  ok
