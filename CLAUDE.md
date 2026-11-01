@@ -24,6 +24,9 @@ specific to developing this repository.
   `references/` and the marked regions of its `SKILL.md` are generated from those files;
   `tests/test_skill.py` fails until they match. Everything else in `SKILL.md` is
   hand-written, and it must stay agent-neutral (the same test greps for vendor names).
+  The script also sets the version in `.claude-plugin/marketplace.json`, the Claude Code
+  marketplace entry; that file is the only agent-specific one, and it stays outside
+  `skills/`.
 
 `tools/bootstrap_pymavlink.py` vendors pymavlink from GitHub when you need `mavextra`
 (WMM expected earth field, magfit) or `mavfft_isb.py`. It is not needed for anything in
