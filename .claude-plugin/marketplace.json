@@ -1,0 +1,19 @@
+{
+  "name": "ardupilot-log-tools",
+  "description": "ArduPilot dataflash log analysis: the agent skill from ardupilot-log-tools",
+  "owner": {
+    "name": "geoffreyheller"
+  },
+  "plugins": [
+    {
+      "name": "ardupilot-log-analysis",
+      "source": "./skills/ardupilot-log-analysis",
+      "description": "Analyse ArduPilot / ArduCopter dataflash (.bin) logs with alog: integrity, windows, vibration, notch, motor balance and CG, GPS, EKF, current sensor, PID tuning",
+      "version": "2.1.0.dev0",
+      "license": "MIT",
+      "repository": "https://github.com/geoffreyheller/ardupilot-log-tools",
+      "homepage": "https://github.com/geoffreyheller/ardupilot-log-tools",
+      "keywords": ["ardupilot", "arducopter", "dataflash", "flight-log", "drone"]
+    }
+  ]
+}
