@@ -416,24 +416,40 @@ rest gets tried.
 
 ## Phase S5: Cross-agent acceptance test, then release
 
-- [ ] Write `tests/agent-eval/` (not run in CI — it costs money and needs accounts): five
-  prompts against `tests/fixtures/largeprop-quad.bin`, each with pass criteria checked
-  against the transcript:
-  1. "Is this log OK?" → runs `alog info` first; reports integrity codes; quotes the window
-     and method string.
-  2. "Check the harmonic notch" → reads `FCNS.CF` against ESC RPM, not `FTN1.PkAvg`.
-  3. "Are my motors balanced?" → quotes the `SERVOn_FUNCTION` map and the trim
-     decomposition, not raw spread alone.
-  4. "Recommend PID gains" → reports the `PID_RATE_TOO_LOW` refusal and the logging
-     table; does not invent gains.
-  5. A question the skill should not trigger on (a PX4 `.ulg`) → skill not used.
+*(Started 2026-10-31 on branch `s5-agent-eval`.)*
+
+- [x] Write `tests/agent-eval/` (not run in the suite — it costs money and needs
+  accounts): `cases.py` (five prompts, each criterion a regex over the commands the agent
+  ran or its answer, or `manual` where a regex cannot judge), `workspace.py` (a clean
+  directory with the fixture, a PX4 ULog header and the skill at project level, nothing
+  else from the repo), `grade.py`, `from_claude_stream.py`, `README.md`, `RESULTS.md`.
+  The criteria were written against what `alog` actually says on the fixture, which
+  corrected two of the planned ones:
+  1. "Is it OK?" → `alog info` first; integrity; the window method `EV
+     NOT_LANDED->LAND_COMPLETE`; one flight; the FAILs with their numbers.
+  2. "Check the harmonic notch" → the fixture's notch is **disabled** (no `FCNS` to read),
+     so: says so, quotes the report's starting point (`MODE 3`, `FREQ 55`) and the
+     batch-logging flight that would verify it, never calls it working.
+  3. "Are my motors balanced?" → the servo→motor map; pitch trim 58 µs; the
+     drive-normalised spread (2.2 %, so load, not drag); and since `trim vs heading` is a
+     SKIP, a breeze is not ruled out and the CG offset is not proven.
+  4. "Recommend PID gains" → the fixture's refusal is **`NO_PID_MESSAGES`** (no PIDR or
+     RATE at all), not `PID_RATE_TOO_LOW`; `LOG_BITMASK 180222 → 180223`; no invented gains.
+  5. A PX4 `.ulg` → `alog` is not run on it.
+  `tests/test_agent_eval.py` (in the suite) checks that `alog`'s own output on the fixture
+  passes every automatic criterion, so a tool change that moves a figure fails there, and
+  tests the grader. Writing it found a grader bug (an answer's own `## ` headings cut it
+  short) and a tool drift (the tune refusal pointed at `SKILLS.md`), both fixed.
 - [ ] Run it in each agent's non-interactive mode where one exists, by hand otherwise, on
   at least three agents from different vendors. Record agent, version, date, pass/fail
   per prompt in `tests/agent-eval/RESULTS.md`.
 - [ ] Tune the `description` until prompts 1–4 trigger and 5 does not, on all three.
 - [ ] Release: bump to 2.1.0 (new `docs`, `install-skill`, `--cache-dir`), CHANGELOG
-  entry, tag `v2.1.0`, publish to PyPI from the tag, attach the wheel and a zipped skill
-  folder to the GitHub release.
+  entry (drafted as "2.1.0 (unreleased)"), tag `v2.1.0`, publish to PyPI from the tag,
+  attach the wheel and a zipped skill folder to the GitHub release.
+  S0 chose trusted publishing from a GitHub Action, but this repository no longer runs
+  Actions, so publishing is `uv publish` from a local build with a PyPI API token, run by
+  the account owner. `tools/ci_local.py` must pass on the release commit first.
 - [ ] Optional: list in public skill directories. Free listings only, no exclusivity.
 
 **Done when:** three agents from different vendors install the skill from the release and
