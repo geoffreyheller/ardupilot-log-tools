@@ -83,7 +83,7 @@ __all__ = ["IDENT_CONSTANTS", "identify", "segment_spectra", "pool_spectra", "fi
            "margins", "closed_loop_step_from_model", "ceilings_from_plant", "margin_ceilings",
            "margin_limits", "meets_margins", "pinned_params", "extrapolated",
            "virtual_autotune", "describe", "plant_rows", "margin_rows", "model_from_params",
-           "bendat_piersol_eps"]
+           "bendat_piersol_eps", "fit_greybox", "sibling_lag", "corner_plants", "robust_margins"]
 
 # ------------------------------------------------------------------------- constants
 
@@ -93,6 +93,9 @@ _SRC_BP = ("Bendat & Piersol, Random Data, random error of a frequency-response 
 _SRC_HELI = ("ArduCopter libraries/AC_AutoTune/AC_AutoTune_Heli.cpp max_allowed_P / max_allowed_D; "
              "`alog docs pid-tuning-sources` (reference/pid-tuning-sources.md) section 5")
 _SRC_WP5 = "docs/pid-tuning-plan.md section 5 WP5 (this module)"
+_SRC_GREYBOX = ("docs/yaw-tuning-plan.md workstreams A and C; measured on Brisket's yaw 2026-11-05 "
+                "(`alog docs pitfalls` (reference/pitfalls.md), PID tuning): with tau2/delay borrowed from roll/pitch "
+                "a reaction-torque zero fits four flights to 2-3 deg of phase, the free fit 11-13 deg")
 _SRC_MARGIN = ("2026-09-30 Brisket validation (`alog docs pitfalls` (reference/pitfalls.md), PID tuning): the largest gain whose full "
                "C(z) G loop keeps tune_phase_margin_deg / tune_gain_margin_db (warn levels)")
 
@@ -127,6 +130,12 @@ IDENT_CONSTANTS = {
     "margin_ceiling_span":   _c((0.05, 4.0), _SRC_MARGIN, "margin ceilings scan this multiple of the current gain; none above it is reported"),
     "margin_ceiling_points": _c(48, _SRC_MARGIN, "log-spaced scan points, then bisection between the last pass and first fail"),
     "margin_ceiling_bisect": _c(20, _SRC_MARGIN, "bisection steps (relative resolution ~1e-6 of the bracket)"),
+    "greybox_axes":          _c(("yaw",), _SRC_GREYBOX, "axes whose plant may take the grey-box form when the free fit pins its lag"),
+    "greybox_max_phase_deg": _c(5.0, _SRC_GREYBOX, "the grey-box fit is accepted only with a phase residual at or below this"),
+    "greybox_tz_bounds_s":   _c((0.005, 2.0), _SRC_GREYBOX, "fit bounds for the reaction-torque zero's time constant; at a bound it is rejected"),
+    "greybox_init_tz_s":     _c(0.1, _SRC_GREYBOX, "initial guess for tz"),
+    "greybox_lag_range_frac": _c(0.2, _SRC_GREYBOX, "robust margins span the sibling axes' tau2 and delay from min x (1 - this) "
+                                                    "to max x (1 + this), refitting k, tau1, tz at every corner"),
 }
 
 _GRID = float(IDENT_CONSTANTS["ident_grid_hz"]["value"])
@@ -147,12 +156,15 @@ def zoh_response(freqs_hz, loop_hz):
     return out
 
 
-def model_response(k, tau1, tau2, delay, freqs_hz, loop_hz=None):
-    """`G(j2 pi f) = k e^{-j w delay} / ((tau1 jw + 1)(tau2 jw + 1))`, deg/s per unit
-    output; with `loop_hz` the ZOH factor is included (what a loop-rate controller sees)."""
+def model_response(k, tau1, tau2, delay, freqs_hz, loop_hz=None, tz=0.0):
+    """`G(j2 pi f) = k (1 + tz jw) e^{-j w delay} / ((tau1 jw + 1)(tau2 jw + 1))`, deg/s per
+    unit output; with `loop_hz` the ZOH factor is included (what a loop-rate controller
+    sees). `tz` is the grey-box yaw plant's reaction-torque zero (0: none)."""
     f = np.asarray(freqs_hz, dtype=float)
     s = 1j * 2.0 * np.pi * f
     G = k * np.exp(-s * delay) / ((tau1 * s + 1.0) * (tau2 * s + 1.0))
+    if tz:
+        G = G * (1.0 + tz * s)
     if loop_hz:
         G = G * zoh_response(f, loop_hz)
     return G
@@ -160,7 +172,7 @@ def model_response(k, tau1, tau2, delay, freqs_hz, loop_hz=None):
 
 def plant_response(plant, freqs_hz, loop_hz=None):
     """`model_response` of a `PlantModel`'s fitted parameters."""
-    return model_response(plant.k, plant.tau1, plant.tau2, plant.delay, freqs_hz, loop_hz)
+    return model_response(plant.k, plant.tau1, plant.tau2, plant.delay, freqs_hz, loop_hz, tz=getattr(plant, "tz", 0.0))
 
 
 def _gd(gains):
@@ -397,6 +409,90 @@ def fit_model(freqs, G, coh, n_avg, loop_hz, sign=1.0):
     return k, tau1, tau2, delay, rms_db, rms_deg, float(res.cost)
 
 
+def fit_greybox(freqs, G, coh, n_avg, loop_hz, tau2, delay):
+    """Weighted least squares of `k, tau1, tz` to `G` with `tau2` and `delay` held at
+    borrowed values: `k (1 + tz s) e^{-s delay} / ((tau1 s + 1)(tau2 s + 1))` x ZOH. Same
+    residuals and weights as `fit_model`. A fixed set of `tz` starts (deterministic), the
+    lowest cost wins. Returns `(k, tau1, tz, rms_db, rms_deg, cost)`."""
+    K = IDENT_CONSTANTS
+    f = np.asarray(freqs, dtype=float)
+    G = np.asarray(G, dtype=complex)
+    eps = bendat_piersol_eps(coh, n_avg)
+    w = 1.0 / np.maximum(eps, float(K["ident_eps_floor"]["value"]))
+    lnG, phG = np.log(np.abs(G)), np.angle(G)
+    zoh = zoh_response(f, loop_hz)
+
+    def resid(x):
+        Gm = model_response(math.exp(x[0]), math.exp(x[1]), tau2, delay, f, tz=math.exp(x[2])) * zoh
+        dmag = np.log(np.abs(Gm)) - lnG
+        dph = np.angle(np.exp(1j * (np.angle(Gm) - phG)))
+        return np.concatenate([w * dmag, w * dph])
+
+    tzlo, tzhi = K["greybox_tz_bounds_s"]["value"]
+    lo = np.array([math.log(K["ident_k_bounds"]["value"][0]), math.log(K["ident_tau1_bounds_s"]["value"][0]), math.log(tzlo)])
+    hi = np.array([math.log(K["ident_k_bounds"]["value"][1]), math.log(K["ident_tau1_bounds_s"]["value"][1]), math.log(tzhi)])
+    x0 = _initial_guess(f, G)
+    best = None
+    for tz0 in (0.5 * float(K["greybox_init_tz_s"]["value"]), float(K["greybox_init_tz_s"]["value"]),
+                5.0 * float(K["greybox_init_tz_s"]["value"])):
+        start = np.clip(np.array([x0[0], x0[1], math.log(tz0)]), lo + 1e-9, hi - 1e-9)
+        res = least_squares(resid, start, bounds=(lo, hi), method="trf",
+                            max_nfev=int(K["ident_max_nfev"]["value"]), x_scale="jac")
+        if best is None or res.cost < best.cost:
+            best = res
+    k, tau1, tz = (math.exp(v) for v in best.x)
+    Gm = model_response(k, tau1, tau2, delay, f, tz=tz) * zoh
+    rms_db = float(np.sqrt(np.mean((20.0 * np.log10(np.abs(Gm) / np.abs(G))) ** 2)))
+    rms_deg = float(np.sqrt(np.mean(np.degrees(np.angle(np.exp(1j * (np.angle(Gm) - phG)))) ** 2)))
+    return float(k), float(tau1), float(tz), rms_db, rms_deg, float(best.cost)
+
+
+def sibling_lag(plants):
+    """The motor/ESC lag of the sibling axes, for a grey-box plant to borrow, or None.
+
+    `plants` is {axis: PlantModel} of fits the caller already accepted (fusion's residual
+    gate). A fit whose `tau2` or `delay` sits at a bound (`pinned_params`) or that is
+    itself a grey-box is skipped: its lag is not measured. Returns `dict(tau2, delay,
+    tau2_range, delay_range, sources)`: the means, and min x (1 - f) .. max x (1 + f)
+    with f = `greybox_lag_range_frac`, the span the robust margins cover."""
+    frac = float(IDENT_CONSTANTS["greybox_lag_range_frac"]["value"])
+    use = {a: p for a, p in (plants or {}).items()
+           if isinstance(p, PlantModel) and p.model == "free" and not pinned_params(p)}
+    if not use:
+        return None
+    t2 = [p.tau2 for p in use.values()]
+    dl = [p.delay for p in use.values()]
+    tot = [p.tau2 + p.delay for p in use.values()]
+    return dict(tau2=float(np.mean(t2)), delay=float(np.mean(dl)),
+                tau2_range=(float(min(t2) * (1 - frac)), float(max(t2) * (1 + frac))),
+                delay_range=(float(min(dl) * (1 - frac)), float(max(dl) * (1 + frac))),
+                # what a sibling fit measures best is the total lag; how it splits between the
+                # pole and the delay trades off (Brisket FETtec: tau2 18.6-33.6 ms but tau2 + delay 40-49 ms)
+                total=float(np.mean(tot)), total_range=(float(min(tot) * (1 - frac)), float(max(tot) * (1 + frac))),
+                sources={a: dict(tau2=float(p.tau2), delay=float(p.delay), fit_rms_db=float(p.fit_rms_db),
+                                 band=list(p.band)) for a, p in use.items()})
+
+
+def _greybox_corners(fb, Gb, cb, n_avg, loop_hz, lag):
+    """The grey-box refitted at every corner of the borrowed lag's range (3 x 3: low,
+    nominal, high tau2 x delay): the data, not the corner, sets k, tau1 and tz there."""
+    out = []
+    t2s = (lag["tau2_range"][0], lag["tau2"], lag["tau2_range"][1])
+    dls = (lag["delay_range"][0], lag["delay"], lag["delay_range"][1])
+    for t2 in t2s:
+        for d in dls:
+            k, tau1, tz, rdb, rdeg, _c = fit_greybox(fb, Gb, cb, n_avg, loop_hz, t2, d)
+            out.append(dict(tau2=float(t2), delay=float(d), k=k, tau1=tau1, tz=tz, rms_db=rdb, rms_deg=rdeg))
+    return out
+
+
+def corner_plants(plant):
+    """The robust-margin plants of a grey-box `PlantModel` (empty for a free fit)."""
+    import dataclasses
+    return [dataclasses.replace(plant, k=c["k"], tau1=c["tau1"], tau2=c["tau2"], delay=c["delay"], tz=c["tz"], corners=[])
+            for c in (plant.corners or [])]
+
+
 def model_from_params(k, tau1, tau2, delay, freqs=None, loop_hz=400.0, n_avg=0, coh=None):
     """A `PlantModel` from known parameters (a true plant in a test, or a model carried
     over from another analysis): the non-parametric arrays are the model's own response
@@ -443,9 +539,12 @@ def _cross_phase(f, ph_deg, level_deg):
     return None
 
 
-def identify(signals):
+def identify(signals, lag=None):
     """Tier B plant identification: `PlantModel` from one or more `AxisSignals` of one
     axis (any number of logs and gain sets), or a `Refusal`.
+
+    `lag` (a `sibling_lag` result) lets a `greybox_axes` plant whose free fit pins its
+    lag take the grey-box form (`_maybe_greybox`); `PlantModel.notes` says what happened.
 
     Steps: `segment_spectra` per segment, `pool_spectra` across them, the coherent band
     (`T["tune_coherence"]["fail"]`, contiguous from the lowest passing bin), a check that
@@ -552,10 +651,61 @@ def identify(signals):
     k, tau1, tau2, delay, rms_db, rms_deg, _cost = fit_pos
     i_c = int(np.argmin(np.abs(freqs - fc)))
     eps = float(bendat_piersol_eps(coh[i_c], n_avg))
-    return PlantModel(freqs=freqs, G=G, coh=coh, n_avg=int(n_avg), band=(float(band[0]), float(band[1])),
+    free = PlantModel(freqs=freqs, G=G, coh=coh, n_avg=int(n_avg), band=(float(band[0]), float(band[1])),
                       k=float(k), tau1=float(tau1), tau2=float(tau2), delay=float(delay),
                       fit_rms_db=rms_db, fit_rms_deg=rms_deg, coh_mean_band=coh_mean_band,
                       eps_mag_at_crossover=eps)
+    return _maybe_greybox(free, axis, lag, fb, Gb, cb, n_avg, loop_hz)
+
+
+def _maybe_greybox(free, axis, lag, fb, Gb, cb, n_avg, loop_hz):
+    """The grey-box form of `free` when it is warranted and the data accepts it, else
+    `free` with a note saying why not (docs/yaw-tuning-plan.md workstream A).
+
+    Tried only on `greybox_axes`, when the free fit's lag is pinned at a bound
+    (`pinned_params`) and a sibling lag (`sibling_lag`) exists. Accepted when the phase
+    residual is <= `greybox_max_phase_deg`, the magnitude residual is no worse than the
+    free fit's and `tz` is off its bounds; `tau1` at its ceiling is allowed (only
+    k/tau1 is identifiable there, as for the free fit)."""
+    import dataclasses
+    K = IDENT_CONSTANTS
+    if axis not in tuple(K["greybox_axes"]["value"]):
+        return free
+    pins = pinned_params(free)
+    if not pins:
+        return free
+    if not lag:
+        return dataclasses.replace(free, notes=[
+            f"grey-box not tried: the free fit's {' and '.join(pins)} sit at their bounds, but no roll/pitch fit with "
+            "a measured lag is available to borrow from (fly some roll/pitch stick in the same log, or pass a log "
+            "that has it)"])
+    k, tau1, tz, rdb, rdeg, _c = fit_greybox(fb, Gb, cb, n_avg, loop_hz, lag["tau2"], lag["delay"])
+    tzlo, tzhi = K["greybox_tz_bounds_s"]["value"]
+    max_deg = float(K["greybox_max_phase_deg"]["value"])
+    why = []
+    if rdeg > max_deg:
+        why.append(f"phase residual {rdeg:.1f} deg > {max_deg:g} deg")
+    if rdb > free.fit_rms_db:
+        why.append(f"magnitude residual {rdb:.2f} dB > the free fit's {free.fit_rms_db:.2f} dB")
+    if tz <= tzlo * 1.02 or tz >= tzhi * 0.98:
+        why.append(f"tz {tz * 1e3:.3g} ms at a bound ({tzlo * 1e3:g}-{tzhi * 1e3:g} ms)")
+    borrowed = (f"tau2 {lag['tau2'] * 1e3:.1f} ms / delay {lag['delay'] * 1e3:.1f} ms borrowed from "
+                + "/".join(sorted(lag["sources"])))
+    if why:
+        return dataclasses.replace(free, notes=[
+            f"grey-box rejected ({borrowed}): " + "; ".join(why)
+            + f" - the free fit stands, with {' and '.join(pins)} at their bounds"])
+    free_fit = dict(k=free.k, tau1=free.tau1, tau2=free.tau2, delay=free.delay, fit_rms_db=free.fit_rms_db,
+                    fit_rms_deg=free.fit_rms_deg, pinned=pins)
+    corners = _greybox_corners(fb, Gb, cb, n_avg, loop_hz, lag)
+    note = (f"grey-box accepted: reaction-torque zero tz {tz * 1e3:.0f} ms ({1.0 / (2 * math.pi * tz):.2f} Hz) with "
+            f"{borrowed}; fit {rdb:.2f} dB / {rdeg:.1f} deg vs the free fit's {free.fit_rms_db:.2f} dB / "
+            f"{free.fit_rms_deg:.1f} deg ({' and '.join(pins)} at their bounds); robust margins over "
+            f"{len(corners)} corners of tau2 {lag['tau2_range'][0] * 1e3:.1f}-{lag['tau2_range'][1] * 1e3:.1f} ms x "
+            f"delay {lag['delay_range'][0] * 1e3:.1f}-{lag['delay_range'][1] * 1e3:.1f} ms")
+    return dataclasses.replace(free, k=k, tau1=tau1, tau2=float(lag["tau2"]), delay=float(lag["delay"]), tz=tz,
+                               fit_rms_db=rdb, fit_rms_deg=rdeg, model="greybox", lag=dict(lag), free_fit=free_fit,
+                               corners=corners, notes=[note])
 
 
 # ---------------------------------------------------------------------------- margins
@@ -626,7 +776,7 @@ def closed_loop_step_from_model(plant, gains, seconds=None):
     g = _gd(gains)
     if seconds is None:
         seconds = float(IDENT_CONSTANTS["step_model_seconds"]["value"])
-    p = tunesim.Plant(plant.k, plant.tau1, plant.tau2, plant.delay, loop_hz=float(g["loop_hz"]))
+    p = tunesim.Plant(plant.k, plant.tau1, plant.tau2, plant.delay, loop_hz=float(g["loop_hz"]), tz=getattr(plant, "tz", 0.0))
     t, act = p.true_closed_loop_step(dict(g, fltt=0.0), seconds=seconds)
     return dict(t=t, act=act, tar=np.ones_like(act),
                 method=f"tunesim.ClosedLoop on the fitted plant (delay {p.delay_samples} loops), unit Tar step, FLTT bypassed")
@@ -723,12 +873,17 @@ def pinned_params(plant, rel=0.02):
     return out
 
 
-def extrapolated(plant, m):
+def extrapolated(plant, m, robust=None):
     """[reason]: why the margins in `m` (a `margins()` result) are not measured but
     extrapolated beyond the coherent band. A crossover above the band's top puts the phase
     margin outside the data. A -180 deg point above it puts the gain margin there too;
     that is normal (the fit carries it) unless the high-frequency lag is itself at a fit
-    bound (`pinned_params`), in which case nothing measured stands behind it."""
+    bound (`pinned_params`), in which case nothing measured stands behind it.
+
+    A grey-box plant's lag is borrowed, not measured on its own axis, so a -180 deg point
+    above the band is extrapolated on it too - unless `robust` (a `robust_margins`
+    result for the same gains) says every corner of the borrowed range keeps the limits:
+    then the worst case stands behind the number and no reason is given."""
     band = plant.band if plant.band and plant.band[0] is not None else None
     if band is None:
         return ["no coherent band"]
@@ -736,12 +891,51 @@ def extrapolated(plant, m):
     fc, f180 = m.get("fc_hz"), m.get("f180_hz")
     if fc is not None and fc > band[1]:
         out.append(f"crossover {fc:.2f} Hz lies above the coherent band {band[0]:g}-{band[1]:g} Hz")
+    where = f"at {f180:.1f} Hz" if f180 is not None else "nowhere below Nyquist"
+    beyond = f180 is None or f180 > band[1]
+    if getattr(plant, "model", "free") == "greybox":
+        if beyond and not (robust and robust.get("ok")):
+            tail = ("" if not robust else
+                    f"; worst of {robust['n']} corners PM {_fmt(robust['worst_pm_deg'], 1)} deg, "
+                    f"GM {_fmt(robust['worst_gm_db'], 2)} dB at {robust['binding']}")
+            out.append(f"gain margin read {where}, above the coherent band {band[0]:g}-{band[1]:g} Hz, on a grey-box "
+                       f"plant whose lag is borrowed from roll/pitch, and the robust check "
+                       + ("was not run" if not robust else "fails") + tail)
+        return out
     pins = pinned_params(plant)
-    if pins and (f180 is None or f180 > band[1]):
-        where = f"at {f180:.1f} Hz" if f180 is not None else "nowhere below Nyquist"
+    if pins and beyond:
         out.append(f"gain margin read {where}, above the coherent band {band[0]:g}-{band[1]:g} Hz, on a fit whose "
                    f"{' and '.join(pins)} sit at their bounds (high-frequency lag not identified)")
     return out
+
+
+def robust_margins(plant, gains):
+    """Workstream C: the margins of `gains` on every corner plant of a grey-box
+    `PlantModel` (`corner_plants`), or None for a free fit. Returns `dict(ok, n,
+    worst_pm_deg, worst_gm_db, binding, per_corner)`: `ok` when every corner keeps
+    `margin_limits()`, `binding` the corner with the least margin (by the smaller of its
+    PM and GM excess over the limits, each scaled by its limit)."""
+    cps = corner_plants(plant)
+    if not cps:
+        return None
+    pm_min, gm_min = margin_limits()
+    rows, worst, worst_score = [], None, math.inf
+    for cp in cps:
+        m = margins(cp, gains)
+        pm, gm = m["pm_deg"], m["gm_db"]
+        score = min((pm - pm_min) / pm_min if pm is not None else math.inf,
+                    (gm - gm_min) / gm_min if gm is not None else math.inf)
+        row = dict(tau2=cp.tau2, delay=cp.delay, k=cp.k, tau1=cp.tau1, tz=cp.tz, pm_deg=pm, gm_db=gm,
+                   fc_hz=m["fc_hz"], f180_hz=m["f180_hz"], meets=meets_margins(m))
+        rows.append(row)
+        if score < worst_score:
+            worst_score, worst = score, row
+    pms = [r["pm_deg"] for r in rows if r["pm_deg"] is not None]
+    gms = [r["gm_db"] for r in rows if r["gm_db"] is not None]
+    binding = f"tau2 {worst['tau2'] * 1e3:.1f} ms / delay {worst['delay'] * 1e3:.1f} ms"
+    return dict(ok=all(r["meets"] for r in rows), n=len(rows), worst_pm_deg=min(pms) if pms else None,
+                worst_gm_db=min(gms) if gms else None, binding=binding, binding_corner=worst, per_corner=rows,
+                pm_min_deg=pm_min, gm_min_db=gm_min)
 
 
 def margin_limits():
@@ -759,6 +953,11 @@ def meets_margins(m):
 def _with(gains, **kw):
     import dataclasses
     return dataclasses.replace(gains, **kw)
+
+
+def _meets_all(plants, gains):
+    """True when `gains` keep the margins on every plant in `plants`."""
+    return all(meets_margins(margins(p, gains)) for p in plants)
 
 
 def margin_ceilings(plant, gains, d_for_p=None, p_for_d=None):
@@ -791,6 +990,7 @@ def margin_ceilings(plant, gains, d_for_p=None, p_for_d=None):
     out, notes = [], []
 
     p_d = float(g0.rat_p if p_for_d is None else p_for_d)
+    plants = [plant] + corner_plants(plant)          # a grey-box ceiling holds on every corner too
 
     def gains_for(name, x):
         if name == "P":
@@ -801,7 +1001,7 @@ def margin_ceilings(plant, gains, d_for_p=None, p_for_d=None):
         if not x0 or x0 <= 0:
             continue
         xs = np.geomspace(lo_mul * x0, hi_mul * x0, npts)
-        ok = [meets_margins(margins(plant, gains_for(name, x))) for x in xs]
+        ok = [_meets_all(plants, gains_for(name, x)) for x in xs]
         if not any(ok):
             notes.append(f"margin ceiling {stem}{name}: no value in {lo_mul:g}-{hi_mul:g} x {x0:.4g} keeps "
                          f"PM >= {pm_min:g} deg and GM >= {gm_min:g} dB"
@@ -814,7 +1014,7 @@ def margin_ceilings(plant, gains, d_for_p=None, p_for_d=None):
         a, b = float(xs[i1 - 1]), float(xs[i1])
         for _ in range(nbis):
             mid = math.sqrt(a * b)
-            if meets_margins(margins(plant, gains_for(name, mid))):
+            if _meets_all(plants, gains_for(name, mid)):
                 a = mid
             else:
                 b = mid
@@ -822,8 +1022,12 @@ def margin_ceilings(plant, gains, d_for_p=None, p_for_d=None):
         held = (dict(rat_i_over_p=ratio_i, rat_d=d_p) if name == "P" else dict(rat_p=p_d, rat_i=p_d * ratio_i))
         ev = dict(pm_deg=m["pm_deg"], gm_db=m["gm_db"], fc_hz=m["fc_hz"], pm_min_deg=pm_min, gm_min_db=gm_min,
                   held=held, scan=[lo_mul * x0, hi_mul * x0, npts], source=K["margin_ceiling_span"]["source"])
-        out.append(Ceiling(param=stem + name, value=a, method=f"margin-{pm_min:g}deg-{gm_min:g}dB", evidence=ev,
-                           includes_margin=True))
+        rob = robust_margins(plant, gains_for(name, a))
+        if rob:
+            ev["robust"] = dict(n=rob["n"], worst_pm_deg=rob["worst_pm_deg"], worst_gm_db=rob["worst_gm_db"],
+                                binding=rob["binding"])
+        out.append(Ceiling(param=stem + name, value=a, method=f"margin-{pm_min:g}deg-{gm_min:g}dB"
+                           + ("-robust" if rob else ""), evidence=ev, includes_margin=True))
         if name == "P":
             p_d = min(p_d, a)
     return out, notes
@@ -841,7 +1045,7 @@ def virtual_autotune(plant, gains, aggr=None, gmbk=None, **kw):
     g = _gd(gains)
     axis = getattr(gains, "axis", None) or kw.pop("axis", "roll")
     kw.pop("axis", None)
-    p = tunesim.Plant(plant.k, plant.tau1, plant.tau2, plant.delay, loop_hz=float(g["loop_hz"]))
+    p = tunesim.Plant(plant.k, plant.tau1, plant.tau2, plant.delay, loop_hz=float(g["loop_hz"]), tz=getattr(plant, "tz", 0.0))
     r = tunesim.autotune(p, g, aggr=aggr, gmbk=gmbk, axis=axis, **kw)
     a = r["constants"]["aggr"]
     ov = r["final_overshoot"]
@@ -871,8 +1075,15 @@ def describe(plant, m=None):
     """Deterministic note lines for the Section: the fit, its quality, the margins."""
     lines = []
     band = plant.band if plant.band and plant.band[0] is not None else None
-    lines.append(f"plant fit: k = {plant.k:.4g} deg/s per unit output, tau1 = {plant.tau1:.4g} s, "
-                 f"tau2 = {plant.tau2:.4g} s, delay = {plant.delay * 1e3:.2f} ms (transport delay excluding the loop-rate hold)")
+    if getattr(plant, "model", "free") == "greybox":
+        lines.append(f"plant fit (grey-box): k = {plant.k:.4g} deg/s per unit output, tau1 = {plant.tau1:.4g} s, "
+                     f"tz = {plant.tz:.4g} s (reaction-torque zero), tau2 = {plant.tau2:.4g} s and delay = "
+                     f"{plant.delay * 1e3:.2f} ms borrowed (k/tau1 = {plant.k / plant.tau1:.4g} deg/s^2 per unit output)")
+    else:
+        lines.append(f"plant fit: k = {plant.k:.4g} deg/s per unit output, tau1 = {plant.tau1:.4g} s, "
+                     f"tau2 = {plant.tau2:.4g} s, delay = {plant.delay * 1e3:.2f} ms (transport delay excluding the loop-rate hold)")
+    for n in getattr(plant, "notes", None) or []:
+        lines.append(n)
     if band is not None:
         lines.append(f"identification band {band[0]:.1f}-{band[1]:.1f} Hz (coherence >= "
                      f"{T['tune_coherence']['fail']:.2f}), mean coherence {plant.coh_mean_band:.3f}, "
@@ -912,6 +1123,15 @@ def plant_rows(plant):
         ["fit rms", f"{plant.fit_rms_db:.2f} dB / {plant.fit_rms_deg:.1f} deg", "-", "model vs measured G over the band"],
         ["eps |G| at crossover", f"{100.0 * plant.eps_mag_at_crossover:.1f}", "%", "Bendat-Piersol random error"],
     ]
+    if getattr(plant, "model", "free") == "greybox":
+        lag, ff = plant.lag or {}, plant.free_fit or {}
+        rows[2][3] = rows[3][3] = "borrowed from " + "/".join(sorted(lag.get("sources") or {}))
+        rows.insert(4, ["tz", f"{plant.tz:.4g}", "s", "reaction-torque zero (grey-box)"])
+        rows.append(["lag range (robust)", f"tau2 {lag['tau2_range'][0] * 1e3:.1f}-{lag['tau2_range'][1] * 1e3:.1f} ms, "
+                     f"delay {lag['delay_range'][0] * 1e3:.1f}-{lag['delay_range'][1] * 1e3:.1f} ms", "-",
+                     f"{len(plant.corners)} corners, k/tau1/tz refitted at each"])
+        rows.append(["free fit (replaced)", f"{ff.get('fit_rms_db', float('nan')):.2f} dB / {ff.get('fit_rms_deg', float('nan')):.1f} deg",
+                     "-", f"tau2 {ff.get('tau2', float('nan')) * 1e3:.3g} ms, delay {ff.get('delay', float('nan')) * 1e3:.3g} ms at their bounds"])
     return ["quantity", "value", "unit", "note"], rows
 
 

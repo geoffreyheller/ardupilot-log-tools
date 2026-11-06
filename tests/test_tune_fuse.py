@@ -653,6 +653,74 @@ def test_all_constants_merges_every_table_without_duplicates():
     json.dumps(_jsonable(c), allow_nan=False)
 
 
+# ------------------------------------------- grey-box yaw end to end (yaw-tuning-plan A + C)
+
+def _greybox_logs():
+    """(yaw-only log, roll/pitch log) of one aircraft whose yaw has a reaction-torque
+    zero and whose axes share one motor lag - the shape of Brisket 2026-11-05: the yaw
+    flight's own roll/pitch are unexcited, the motor lag must come from another log."""
+    if "greybox" not in _CACHE:
+        from tunesynth import GAINS_10IN
+        lag = dict(tau2=0.030, delay=0.012)
+        plants = dict(roll=tunesim.Plant(k=6000.0, tau1=0.30, **lag), pitch=tunesim.Plant(k=5000.0, tau1=0.30, **lag),
+                      yaw=tunesim.Plant(k=2400.0, tau1=2.0, tz=0.2, **lag))
+        out = []
+        for name, axes, seed in (("gb-yaw", ("yaw",), 3), ("gb-rp", ("roll", "pitch"), 4)):
+            gains = dict(GAINS_10IN, yaw=dict(GAINS_10IN["yaw"], fltd=0.0))       # yaw FLTD 0, as on the aircraft
+            w = fast_log(plants, gains, seconds=90.0, seed=seed, axes=axes)
+            out.append(Log(w.write(os.path.join(TMP, name + ".bin")), use_cache=False))
+        _CACHE["greybox"] = tuple(out)
+    return _CACHE["greybox"]
+
+
+def test_yaw_borrows_the_motor_lag_from_another_log_and_is_recommended_on_robust_margins():
+    yaw_log, rp_log = _greybox_logs()
+    w_y, w_rp = airborne_window(yaw_log), airborne_window(rp_log)
+    # alone, the yaw flight cannot lend itself a lag: the free fit stands, its gain margin is not measured
+    alone = tune_fuse.analyse([yaw_log], [w_y], axes=("yaw",), log_names=["gb-yaw.bin"])
+    assert alone.extra["sibling_lag"] is None and alone.per_axis["yaw"]["plant"].model == "free"
+    assert alone.per_axis["yaw"]["plant"].notes[0].startswith("grey-box not tried")
+    res0 = {r.name: r for r in tune_fuse.to_section(alone).results}
+    assert res0["yaw gain margin"].status == SKIP
+    # with --lag-from the roll/pitch log: grey-box, robust margins, a recommendation
+    a = tune_fuse.analyse([yaw_log], [w_y], axes=("yaw",), log_names=["gb-yaw.bin"],
+                          lag_from=[(rp_log, w_rp, "gb-rp.bin")])
+    assert a.extra["lag_from"] == dict(logs=["gb-rp.bin"], used=True, reasons=[])
+    lag = a.extra["sibling_lag"]
+    assert set(lag["sources"]) == {"roll gb-rp.bin", "pitch gb-rp.bin"}       # per log, named
+    assert lag["tau2"] == pytest.approx(0.030, rel=0.05)
+    pm = a.per_axis["yaw"]["plant"]
+    assert pm.model == "greybox" and pm.tz == pytest.approx(0.2, rel=0.1) and len(pm.corners) == 9
+    assert set(a.per_axis) == {"yaw"}                                          # nothing pooled or reported for roll/pitch
+    recs = _by(a.recommendations)
+    p = recs["ATC_RAT_YAW_P"]
+    assert p.method == "virtual-autotune" and math.isfinite(p.value) and p.value > p.current
+    ev = p.evidence
+    assert "grey-box plant" in p.note and "consistency x" in p.note
+    gate = ev["margin_gate"]
+    assert gate["ok"] and gate["robust"]["n"] == 9 and gate["robust"]["ok"] and gate["extrapolated"] == []
+    assert gate["robust"]["worst_gm_db"] <= gate["gm_db"]
+    # the confidence carries the borrowed lag's range: 1 - half-width / nominal of the
+    # sibling fits' total lag (tau2 + delay) +-greybox_lag_range_frac. Two siblings that
+    # agree give about 1 - frac.
+    from dflog import tune_ident
+    frac = tune_ident.IDENT_CONSTANTS["greybox_lag_range_frac"]["value"]
+    tot = lag["total_range"]
+    lag_factor = ev["chosen"]["evidence"]["lag_factor"]
+    assert lag_factor == pytest.approx(1.0 - (tot[1] - tot[0]) / 2.0 / lag["total"], rel=1e-9)
+    assert lag_factor == pytest.approx(1.0 - frac, abs=0.03)
+    assert ev["components"]["consistency"] <= lag_factor + 1e-12
+    sec = tune_fuse.to_section(a)
+    res = {r.name: r for r in sec.results}
+    assert res["yaw gain margin"].status == PASS and "worst of 9 borrowed-lag corners" in res["yaw gain margin"].summary
+    assert any(n.startswith("yaw: plant fit (grey-box)") for n in sec.notes)
+    assert any(n.startswith("yaw: grey-box accepted") for n in sec.notes)
+    d = tune_fuse.analysis_to_dict(a)
+    json.dumps(d, allow_nan=False)
+    jp = d["per_axis"]["yaw"]["plant"]
+    assert jp["model"] == "greybox" and jp["tz"] == pytest.approx(pm.tz) and len(jp["corners"]) == 9
+
+
 class _raises:
     def __init__(self, exc):
         self.exc = exc

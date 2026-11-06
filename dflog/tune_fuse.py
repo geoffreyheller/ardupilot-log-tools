@@ -544,6 +544,16 @@ def tier_candidates(axis, entry, current, autotune_axes=None):
             cover = min(1.0, max(0.0, (plant.band[1] - plant.band[0]) / (hi - lo))) if hi > lo else 1.0
             exc = _clip01(plant.coh_mean_band) * cover
             cons = max(0.0, 1.0 - float(plant.eps_mag_at_crossover) / float(_fc("fuse_eps_scale")))
+            lag_factor = None
+            if plant.model == "greybox" and plant.lag:
+                # borrowed lag: consistency falls with the width of the measured total lag's range
+                # (docs/yaw-tuning-plan.md workstream C step 3) - the sibling fits' tau2 + delay,
+                # +-greybox_lag_range_frac; the robust corners keep the wider tau2 x delay box
+                lg = plant.lag
+                nom = lg["total"]
+                half = (lg["total_range"][1] - lg["total_range"][0]) / 2.0
+                lag_factor = _clip01(1.0 - half / nom) if nom > 0 else 0.0
+                cons *= lag_factor
             ev = dict(virtual=dict((k, va.get(k)) for k in ("rat_p", "rat_i", "rat_d", "ang_p", "acc_max_dps2", "flte", "n_twitches",
                                                            "steps_completed", "final_overshoot", "final_bounce", "aborted", "why")),
                       plant=dict(k=plant.k, tau1=plant.tau1, tau2=plant.tau2, delay=plant.delay, band=list(plant.band),
@@ -553,6 +563,11 @@ def tier_candidates(axis, entry, current, autotune_axes=None):
                       band_cover=cover, band_ref_hz=[lo, hi], aggr=(va.get("constants") or {}).get("aggr"),
                       gmbk=(va.get("constants") or {}).get("gmbk"))
             note = f"virtual AutoTune: {va.get('why', '')}"
+            if lag_factor is not None:
+                ev["plant"].update(model="greybox", tz=plant.tz)
+                ev["lag_factor"] = lag_factor
+                note += (f"; grey-box plant (tz {plant.tz * 1e3:.0f} ms, lag borrowed from roll/pitch): consistency x "
+                         f"{lag_factor:.2f} for the borrowed lag's range")
             for field in REC_FIELDS:
                 v = va.get(field)
                 if v is None or not allowed(field, "virtual-autotune"):
@@ -754,15 +769,19 @@ def fuse(per_axis, current_gains, autotune_axes=None, prop_in=None):
                        else float(getattr(cur, f) or 0.0) for f in gated}
             m = tune_ident.margins(plant, dataclasses.replace(cur, **applied))
             pm_min, gm_min = tune_ident.margin_limits()
-            ok = tune_ident.meets_margins(m)
-            extra = tune_ident.extrapolated(plant, m)
+            rob = tune_ident.robust_margins(plant, dataclasses.replace(cur, **applied))
+            ok = tune_ident.meets_margins(m) and (rob is None or rob["ok"])
+            extra = tune_ident.extrapolated(plant, m, rob)
             txt = (f"the rate set as applied (P {applied['rat_p']:.4g} I {applied['rat_i']:.4g} D {applied['rat_d']:.4g}"
                    + (f" FLTE {applied['flte']:.3g}" if axis == "yaw" else "") + ") "
-                   f"gives PM {_fmt(m['pm_deg'], 3)} deg, GM {_fmt(m['gm_db'], 3)} dB on the identified plant "
-                   f"(limits {pm_min:g} deg / {gm_min:g} dB)")
+                   f"gives PM {_fmt(m['pm_deg'], 3)} deg, GM {_fmt(m['gm_db'], 3)} dB on the identified plant"
+                   + (f", worst of {rob['n']} borrowed-lag corners PM {_fmt(rob['worst_pm_deg'], 3)} deg, "
+                      f"GM {_fmt(rob['worst_gm_db'], 3)} dB (binding {rob['binding']})" if rob else "")
+                   + f" (limits {pm_min:g} deg / {gm_min:g} dB)")
             gate = dict(applied=applied, pm_deg=m["pm_deg"], gm_db=m["gm_db"], fc_hz=m["fc_hz"], f180_hz=m["f180_hz"],
                         ok=ok and not extra, meets=ok, extrapolated=extra, band=list(plant.band),
-                        pm_min_deg=pm_min, gm_min_db=gm_min)
+                        pm_min_deg=pm_min, gm_min_db=gm_min,
+                        robust=_safe({k: v for k, v in rob.items() if k != "per_corner"}) if rob else None)
             for f in rate_fields:
                 fused[f]["ev"]["margin_gate"] = gate
                 if not ok:
@@ -920,7 +939,43 @@ def _dedupe_refusals(refusals):
     return out
 
 
-def analyse(logs, windows, axes=AXES, prop_in=None, aggr=None, log_names=None):
+def _sibling_lag(logs, windows, names, all_sigs, axes, lag_from=None):
+    """`tune_ident.sibling_lag` from the roll and pitch fits of each log **separately**
+    (docs/yaw-tuning-plan.md workstream A), or None when no yaw is analysed.
+
+    Per log, not pooled: a yaw-only flight's roll/pitch fits pin their lag for want of
+    stick input, and pooling them with another log's clean fits drags those down too
+    (Brisket 2026-11-05 with 10-29). A fit counts when fusion's residual gate passes it
+    and its lag is off the bounds. Roll/pitch signals are extracted quietly when only yaw
+    was asked for; their refusals are not reported."""
+    if "yaw" not in axes:
+        return None
+    by_log = {}
+    for s in all_sigs:
+        if s.axis in ("roll", "pitch"):
+            by_log.setdefault((s.log_name, s.axis), []).append(s)
+    missing = tuple(a for a in ("roll", "pitch") if a not in axes)
+    sources = [(lg, w, n, missing) for lg, w, n in zip(logs, windows, names)] if missing else []
+    sources += [(lg, w, n, ("roll", "pitch")) for lg, w, n in (lag_from or [])]
+    for lg, w, n, ax in sources:
+        try:
+            sigs, _refs = extract_axes(lg, w, ax, log_name=n)
+        except Exception:
+            continue
+        for s in sigs:
+            by_log.setdefault((s.log_name, s.axis), []).append(s)
+    plants = {}
+    for (n, axis), sigs in sorted(by_log.items()):
+        try:
+            pm = tune_ident.identify(sigs)
+        except Exception:
+            continue
+        if isinstance(pm, PlantModel) and _fit_rejected(pm) is None:
+            plants[f"{axis} {n}"] = pm
+    return tune_ident.sibling_lag(plants)
+
+
+def analyse(logs, windows, axes=AXES, prop_in=None, aggr=None, log_names=None, lag_from=None):
     """The pipeline of plan section 2.3 over one or more logs of one aircraft.
 
     logs, windows   parallel lists (`Log`, `flight.Window`)
@@ -990,6 +1045,19 @@ def analyse(logs, windows, axes=AXES, prop_in=None, aggr=None, log_names=None):
             refusals.extend(s.get("refusals") or [])
         extra["params_by_log"][n] = dict(MOT_THST_EXPO=lg.param("MOT_THST_EXPO"))
     pooled_all = tune_atun.pool_sessions(sessions_by_log)
+    if lag_from:
+        lag_ids = [_identity(lg, w, n) for lg, w, n in lag_from]
+        lag_ok, lag_reasons = _identity_gate(ids + lag_ids)
+        extra["lag_from"] = dict(logs=[n for _l, _w, n in lag_from], used=lag_ok, reasons=lag_reasons)
+        if not lag_ok:
+            lag_from = None
+    try:
+        lag = _sibling_lag(logs, windows, names, all_sigs, axes, lag_from=lag_from)
+    except Exception as exc:
+        lag = None
+        ids[latest]["errors"].append(dict(tier="B", error=f"sibling lag: {type(exc).__name__}: {exc}",
+                                          traceback=traceback.format_exc()))
+    extra["sibling_lag"] = lag
 
     per_axis, params, gains_by_axis = {}, [], {}
     for axis in axes:
@@ -1061,7 +1129,7 @@ def analyse(logs, windows, axes=AXES, prop_in=None, aggr=None, log_names=None):
         # ---- tier B pooled over every segment of the axis
         if sigs:
             try:
-                pm = tune_ident.identify(sigs)
+                pm = tune_ident.identify(sigs, lag=lag if axis == "yaw" else None)
                 if isinstance(pm, Refusal):
                     entry["plant_refusal"] = pm
                     refusals.append(pm)
@@ -1319,8 +1387,11 @@ def to_section(analysis, whole_tool_refusal=None):
     for axis, e in analysis.per_axis.items():
         m = e.get("margins")
         if m:
-            ex = tune_ident.extrapolated(e["plant"], m) if isinstance(e.get("plant"), PlantModel) else []
-            rejected = _fit_rejected(e.get("plant")) if isinstance(e.get("plant"), PlantModel) else None
+            plant_ = e.get("plant") if isinstance(e.get("plant"), PlantModel) else None
+            rob = (tune_ident.robust_margins(plant_, e["current"])
+                   if plant_ is not None and e.get("current") is not None else None)
+            ex = tune_ident.extrapolated(plant_, m, rob) if plant_ is not None else []
+            rejected = _fit_rejected(plant_) if plant_ is not None else None
             for key, tkey, label in (("gm_db", "tune_gain_margin_db", "gain margin"), ("pm_deg", "tune_phase_margin_deg", "phase margin")):
                 v = m.get(key)
                 unit = "dB" if key == "gm_db" else "deg"
@@ -1344,10 +1415,16 @@ def to_section(analysis, whole_tool_refusal=None):
                                                              "crossing on the fit grid", evidence=_safe(dict(margins=m)),
                                    source=T[tkey]["source"]))
                     continue
-                g = _grade(v, tkey, higher_is_worse=False, name=f"{axis} {label}",
+                worst = rob.get("worst_" + key) if rob else None
+                grey = _fin(worst)
+                graded = worst if grey else v                     # a grey-box plant is graded on its worst corner
+                g = _grade(graded, tkey, higher_is_worse=False, name=f"{axis} {label}",
                            fc_hz=m.get("fc_hz"), f180_hz=m.get("f180_hz"), np_value=m.get("np_" + key), np_in_band=m.get("np_in_band"))
                 unit = "dB" if key == "gm_db" else "deg"
-                g.summary = (f"{v:.2f} {unit} on the fitted open loop (warn {T[tkey]['warn']:g}, fail {T[tkey]['fail']:g})"
+                g.summary = ((f"{graded:.2f} {unit}, the worst of {rob['n']} borrowed-lag corners ({rob['binding']}); "
+                              f"{v:.2f} {unit} on the nominal grey-box fit" if grey else
+                              f"{v:.2f} {unit} on the fitted open loop")
+                             + f" (warn {T[tkey]['warn']:g}, fail {T[tkey]['fail']:g})"
                              + (f"; measured in band {m.get('np_' + key):.2f} {unit}" if _fin(m.get("np_" + key)) else ""))
                 sec.add(g)
         for s in e.get("autotune") or []:
@@ -1505,7 +1582,8 @@ def analysis_to_dict(analysis):
             rules=_safe(e.get("rules")),
             plant=_safe(dict(k=pm.k, tau1=pm.tau1, tau2=pm.tau2, delay=pm.delay, band=list(pm.band), fit_rms_db=pm.fit_rms_db,
                              fit_rms_deg=pm.fit_rms_deg, coh_mean_band=pm.coh_mean_band, eps_mag_at_crossover=pm.eps_mag_at_crossover,
-                             n_avg=pm.n_avg)) if isinstance(pm, PlantModel) else None,
+                             n_avg=pm.n_avg, model=pm.model, tz=pm.tz, lag=pm.lag, free_fit=pm.free_fit,
+                             corners=pm.corners, notes=pm.notes)) if isinstance(pm, PlantModel) else None,
             plant_refusal=_safe(e.get("plant_refusal")), margins=_safe(e.get("margins")),
             virtual=_safe({k: v for k, v in (e.get("virtual") or {}).items() if k not in ("twitches",)}) if e.get("virtual") else None,
             ceilings=_safe(e.get("ceilings")), pooled=_safe(e.get("pooled")),

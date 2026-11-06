@@ -221,6 +221,15 @@ acceleration floors, `D_UP_DOWN_MARGIN` 0.2, the PI ratios); QuickTune's `QUIK_O
 and `QUIK_GAIN_MARGIN` 0.6; and the 10 s minimum parameter-constant segment. Firmware
 defaults used when a parameter is absent from the log are in `tune.DEFAULTS` with the
 header each came from, and every one that was used is named in `GainSet.defaulted`.
+The yaw grey-box plant and its robust margins (`docs/yaw-tuning-plan.md` A and C) are
+algorithm constants in `tune_ident.IDENT_CONSTANTS`: `greybox_axes` (yaw),
+`greybox_max_phase_deg` 5 (the acceptance residual), `greybox_tz_bounds_s` 5 ms–2 s,
+`greybox_lag_range_frac` 0.2 (the borrowed lag's range: sibling min × 0.8 to max × 1.2,
+nine corners), all sourced to Brisket's 2026-11-05 measurements. The confidence of a
+recommendation on a grey-box plant multiplies tier B's consistency by
+`1 − half-width / nominal` of the siblings' total lag `τ2 + delay` over that range — a
+derived factor (~0.7 when the sibling fits agree), not a new threshold. The oscillation
+test's `osc_min_out_amp` 5e-4 (one DShot step) is in `tune_step.CONSTANTS`.
 RULES §2 forbids hard-coding a number in a check; those tables are where the numbers live
 and where their provenance is. `alog schema` prints `T`; the constants table is
 `tune_constants` (`tune.all_constants()` merges every tuning module's table).

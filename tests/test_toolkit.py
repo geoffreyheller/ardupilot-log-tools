@@ -330,12 +330,18 @@ def test_brisket_fast_log_tune_pins():
 BRISKET_TUNE_AFTER = "brisket-t2.bin"
 
 
-def test_brisket_pitch_change_validated_and_yaw_withheld():
+def test_brisket_pitch_change_validated_and_yaw_greybox():
     """The pitch set of brisket-t1 flown on brisket-t2 (P 0.129, D 0.0035; I left at 0.135), in a
     light breeze on the same pack. Pins the validation (pitch PM 43.1 -> 46.2 deg, roll
-    unchanged within 1 deg), the deadband (pitch now within 5 % of its ceiling: no change),
-    and the extrapolation gate (yaw coherent only 0.5-3.5 Hz with tau2/delay pinned: its
-    P 0.18 -> 0.48 at confidence 0.70 is withheld, its gain margin SKIP)."""
+    unchanged within 1 deg) and the deadband (pitch now within 5 % of its ceiling: no change).
+
+    Yaw, amended 2026-11-05. Until then the extrapolation gate withheld it: coherent only
+    0.5-3.5 Hz, tau2/delay pinned, P 0.18 -> 0.48 at confidence 0.70 on a gain margin read at
+    21 Hz, gain margin SKIP. With the grey-box plant (docs/yaw-tuning-plan.md A + C) the
+    lag is borrowed from this log's own roll/pitch (40.6 / 13.8 ms), a reaction-torque zero
+    of 214 ms fits to 0.77 dB / 2.0 deg (free fit 1.60 dB / 13.1 deg), and the virtual
+    AutoTune gives P 0.353 at confidence 0.54 with every borrowed-lag corner above the
+    limits: worst GM 18.9 dB, PM 99.8 deg, both graded PASS."""
     import math
     from dflog import tune_fuse
     log = _load(os.path.join(LOG_DIR_LARGE, BRISKET_TUNE_AFTER))
@@ -346,11 +352,65 @@ def test_brisket_pitch_change_validated_and_yaw_withheld():
     r = {x.param: x for x in a.recommendations}
     assert r["ATC_RAT_PIT_P"].method == "unchanged" and abs(r["ATC_RAT_PIT_P"].value - 0.129) < 1e-6
     assert "deadband" in r["ATC_RAT_PIT_P"].note
-    for p in ("ATC_RAT_YAW_P", "ATC_RAT_YAW_I", "ATC_RAT_YAW_FLTE"):
-        assert math.isnan(r[p].value) and "not measured" in r[p].note, (p, r[p].note)
+    pm = a.per_axis["yaw"]["plant"]
+    assert pm.model == "greybox" and abs(pm.tz - 0.214) < 0.01 and pm.fit_rms_deg < 3.0
+    assert abs(pm.tau2 - 0.0406) < 0.001 and abs(pm.delay - 0.0138) < 0.0005
+    assert abs(r["ATC_RAT_YAW_P"].value - 0.353) < 0.01 and r["ATC_RAT_YAW_P"].method == "virtual-autotune"
+    assert abs(r["ATC_RAT_YAW_P"].confidence - 0.54) < 0.03
+    assert math.isfinite(r["ATC_RAT_YAW_FLTE"].value) and "not measured" not in r["ATC_RAT_YAW_P"].note
     sec = tune_fuse.to_section(a)
     gm = {x.name: x for x in sec.results}["yaw gain margin"]
-    assert gm.status == "SKIP" and "not measured" in gm.summary
+    assert gm.status == "PASS" and "worst of 9 borrowed-lag corners" in gm.summary and "18.9" in gm.summary
+
+
+BRISKET_YAW_FLIGHT = "brisket-y1.bin"                  # yaw-only Loiter flight, ATC_ACCEL_Y_MAX 60000, FETtec ESC
+BRISKET_FETTEC_LAG = ["brisket-f1.bin", "brisket-f2.bin", "brisket-f3.bin", "brisket-f4.bin"]
+
+
+def test_brisket_yaw_flight_greybox_with_lag_from_other_flights():
+    """Brisket 2026-11-05 on the FETtec ESC: a yaw-only flight with the yaw target's
+    acceleration limit raised (ATC_ACCEL_Y_MAX 27000 -> 60000, shaping only) gave a coherent
+    yaw band of 0.5-7 Hz; every earlier FETtec flight was NO_COHERENCE on yaw. Its own
+    roll/pitch fits pin (no stick on those axes), so the lag comes from four earlier FETtec
+    flights (`--lag-from`), six clean fits, per log: tau2 28.4 ms, delay 16.0 ms. Grey-box
+    tz 197 ms, fit 0.70 dB / 2.5 deg (free fit 2.12 dB / 11.4 deg). The virtual AutoTune
+    gives P 0.308, FLTE 1.33 at confidence 0.46 (validate before applying); worst corner
+    GM 14.65 dB, PM 102 deg at the current gains."""
+    import math
+    from dflog import tune_fuse
+    log = _load(os.path.join(LOG_DIR_LARGE, BRISKET_YAW_FLIGHT))
+    lag = [(lg, airborne_window(lg), n) for n in BRISKET_FETTEC_LAG
+           for lg in [_load(os.path.join(LOG_DIR_LARGE, n))]]
+    alone = tune_fuse.analyse([log], [airborne_window(log)], axes=("yaw",))
+    assert alone.per_axis["yaw"]["plant"].model == "free" and alone.extra["sibling_lag"] is None
+    a = tune_fuse.analyse([log], [airborne_window(log)], axes=("yaw",), lag_from=lag)
+    sl = a.extra["sibling_lag"]
+    assert len(sl["sources"]) == 6 and abs(sl["tau2"] - 0.0284) < 0.001 and abs(sl["delay"] - 0.0160) < 0.0005
+    pm = a.per_axis["yaw"]["plant"]
+    assert pm.model == "greybox" and abs(pm.tz - 0.197) < 0.01 and pm.band == (0.5, 7.0)
+    assert pm.fit_rms_db < 0.8 and pm.fit_rms_deg < 3.0 and pm.free_fit["fit_rms_deg"] > 10.0
+    r = {x.param: x for x in a.recommendations}
+    p = r["ATC_RAT_YAW_P"]
+    assert abs(p.value - 0.308) < 0.01 and abs(p.confidence - 0.46) < 0.03 and p.method == "virtual-autotune"
+    assert abs(r["ATC_RAT_YAW_FLTE"].value - 1.33) < 0.03 and math.isfinite(r["ATC_RAT_YAW_I"].value)
+    gate = p.evidence["margin_gate"]
+    assert gate["ok"] and gate["robust"]["ok"] and gate["robust"]["worst_gm_db"] > 10.0
+    gm = {x.name: x for x in tune_fuse.to_section(a).results}["yaw gain margin"]
+    assert gm.status == "PASS" and "14.65" in gm.summary
+
+
+def test_brisket_fettec_yaw_peak_at_34_hz_is_not_a_limit_cycle():
+    """brisket-f3/f5 (FETtec, 2026-10-21 and 10-28): a 10-12 dB line at 34.5 Hz in the yaw
+    tracking error once read as a limit cycle and cut yaw P 0.18 -> 0.072. Its output
+    amplitude through |C| is ~1.1e-5, below one motor command step: a disturbance."""
+    from dflog import tune_step, tune
+    for name in ("brisket-f3.bin", "brisket-f5.bin"):
+        log = _load(os.path.join(LOG_DIR_LARGE, name))
+        sigs, _r = tune.extract_axes(log, airborne_window(log), axes=("yaw",))
+        osc = tune_step.oscillation(sigs[0])
+        assert osc["at_ceiling"] is False and osc["ceilings"] == [], (name, osc["note"])
+        d = osc["disturbance"]
+        assert abs(d["freq_hz"] - 34.5) < 0.6 and d["out_amp"] < 2e-5, (name, d)
 
 
 # ------------------------------------------------ the large-prop aircraft (issue #3)

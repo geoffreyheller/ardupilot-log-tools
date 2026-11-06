@@ -424,6 +424,14 @@ class PlantModel:
     fit_rms_deg: float
     coh_mean_band: float
     eps_mag_at_crossover: float         # Bendat-Piersol random error of |G|
+    # grey-box yaw (docs/yaw-tuning-plan.md workstream A): k (1 + tz s) e^{-sd} / ((tau1 s + 1)(tau2 s + 1))
+    # with tau2/delay borrowed from the sibling axes; "free" is the plain 4-parameter fit
+    tz: float = 0.0                     # reaction-torque zero, s (0: none)
+    model: str = "free"                 # "free" | "greybox"
+    lag: dict | None = None             # borrowed lag: tau2, delay, their ranges and sources (greybox only)
+    free_fit: dict | None = None        # the free fit it replaced (greybox only)
+    corners: list = field(default_factory=list)   # [{tau2, delay, k, tau1, tz, rms_db, rms_deg}] for robust margins
+    notes: list = field(default_factory=list)     # why the grey-box form was or was not taken
 
 
 @dataclass

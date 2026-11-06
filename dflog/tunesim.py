@@ -309,19 +309,29 @@ class Plant:
     whole samples (so at 400 Hz it is quantised to 2.5 ms and the quantised value is on
     `delay_samples`; `delay_s_effective` is what the discrete model actually applies).
     `tau2 = 0` gives a single pole.
+
+    `tz` (seconds, default 0) multiplies the numerator by `(1 + tz s)`: the zero of a
+    multirotor's yaw, where the body torque is the rotors' drag torque (through the motor
+    lag) plus the reaction torque of accelerating them, a derivative term
+    (`docs/yaw-tuning-plan.md` workstream A). It needs `tau2 > 0`; `tz = 0` builds the
+    original matrices exactly.
     """
 
-    def __init__(self, k, tau1, tau2=0.0, delay=0.0, loop_hz=400.0):
+    def __init__(self, k, tau1, tau2=0.0, delay=0.0, loop_hz=400.0, tz=0.0):
         self.k, self.tau1, self.tau2, self.delay = float(k), float(tau1), float(tau2), float(delay)
+        self.tz = float(tz)
         self.loop_hz = float(loop_hz)
         self.dt = 1.0 / self.loop_hz
         if self.tau1 <= 0:
             raise ValueError("tau1 must be positive")
+        if self.tz < 0 or (self.tz > 0 and self.tau2 <= 0):
+            raise ValueError("tz must be >= 0 and needs tau2 > 0")
         if cont2discrete is None:
             raise RuntimeError("scipy is required for Plant")
         if self.tau2 > 0:
-            A = np.array([[-1.0 / self.tau1, 0.0], [1.0 / self.tau2, -1.0 / self.tau2]])
-            B = np.array([[self.k / self.tau1], [0.0]])
+            # x1 = k u / (tau1 s + 1);  x2 = x1 (1 + tz s) / (tau2 s + 1), with s x1 from x1's own equation
+            A = np.array([[-1.0 / self.tau1, 0.0], [(1.0 - self.tz / self.tau1) / self.tau2, -1.0 / self.tau2]])
+            B = np.array([[self.k / self.tau1], [self.tz * self.k / (self.tau1 * self.tau2)]])
             C = np.array([[0.0, 1.0]])
         else:
             A = np.array([[-1.0 / self.tau1]])
@@ -335,11 +345,11 @@ class Plant:
         self.reset()
 
     def copy(self):
-        return Plant(self.k, self.tau1, self.tau2, self.delay, self.loop_hz)
+        return Plant(self.k, self.tau1, self.tau2, self.delay, self.loop_hz, tz=self.tz)
 
     def params(self):
         return dict(k=self.k, tau1=self.tau1, tau2=self.tau2, delay=self.delay, loop_hz=self.loop_hz,
-                    delay_samples=self.delay_samples)
+                    delay_samples=self.delay_samples, tz=self.tz)
 
     def reset(self):
         self.x = np.zeros(self.Ad.shape[0])
@@ -364,6 +374,8 @@ class Plant:
         w = 2.0 * np.pi * np.asarray(freqs_hz, dtype=float)
         s = 1j * w
         G = self.k * np.exp(-s * self.delay) / ((self.tau1 * s + 1.0) * ((self.tau2 * s + 1.0) if self.tau2 > 0 else 1.0))
+        if self.tz:
+            G = G * (1.0 + self.tz * s)
         return G
 
     def true_closed_loop_step(self, gains, seconds=0.5, amplitude=1.0, angle_loop=False):

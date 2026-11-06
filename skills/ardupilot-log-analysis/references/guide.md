@@ -378,7 +378,12 @@ set as applied is then re-checked against the same margins and withheld if it fa
 if those margins are **extrapolated**: a crossover above the coherent band, or a gain margin
 read above it on a fit whose `tau2`/delay sit at their bounds (Brisket's yaw, coherent
 0.5–3.5 Hz, got P 0.18 → 0.48 at confidence 0.70 on a "36 dB" margin at 21 Hz before this
-gate). A change inside **±5 %** (`fuse_deadband_pct`, the same aircraft's flight-to-flight
+gate). Yaw has a way out: its free fit pins because yaw carries a **reaction-torque zero**
+the 4-parameter model lacks. With `τ2`/delay borrowed from roll/pitch fits (per log;
+`--lag-from` adds earlier flights of the same hardware) it is refitted as a grey-box with
+that zero, and its margins are checked on every corner of the borrowed lag's range — pass
+on all and the gain margin counts as measured (Brisket: GM read at ~8 Hz, not 21; P 0.31
+at confidence 0.46). recipes.md Skill 7 has the rule. A change inside **±5 %** (`fuse_deadband_pct`, the same aircraft's flight-to-flight
 variation) reads `unchanged` with the tier's value in the evidence — except for rate gains
 while the current loop misses the margins, where a small change is the correction (pitch
 −4.6 % took PM 43.1° → 46.2°). `I` follows `P` by AutoTune's ratio unless the log's own ratio
@@ -411,7 +416,9 @@ refused with `PID_RATE_TOO_LOW`. Before the tuning flight set these — the rows
 | `SID_T_FADE_OUT` | 2 | optional plant-identification flight (firmware default) | B |
 
 Then fly the tuning profile: 30 s hover, 60 s of sharp roll stick inputs (±15–20°, quick
-release), 60 s pitch, 30 s yaw, one gain set per flight. For tier B on top of that, a
+release), 60 s pitch, 30 s yaw, one gain set per flight. For yaw without a sweep, raise
+`ATC_ACCEL_Y_MAX` for one yaw-only Loiter flight (recipes.md Skill 7): it shapes only the
+target, and it is what stops stick yaw near 3 Hz. For tier B on top of that, a
 SysID sweep of 0.5–40 Hz (`SID_T_REC 70`, fades 15 s / 2 s), one axis per flight —
 AnalyticTune's 0.05–5 Hz sweep stops at or below the rate-loop crossover (4.5–5 Hz
 measured on the 10-inch Brisket; ~23 Hz on the simulated 5-inch plant). A hover with no stick input is refused on excitation, not coherence. Set bit 0
@@ -500,6 +507,12 @@ Full list in `pitfalls.md`.
   reference is the angle loop reacting to noise: coherence reads ~1.0 and the estimate is
   biased toward −1/C. Coherence is necessary, not sufficient; the tool gates on excitation
   first (`NO_EXCITATION`).
+- **Yaw has a reaction-torque zero.** Spinning rotors up kicks the airframe, so yaw leads
+  where roll/pitch lag; a 4-parameter fit buys the lead back by pinning `tau2` and the
+  delay at their bounds. The grey-box plant borrows the lag and fits the zero
+  (`pitfalls.md`, 2026-11-05).
+- **A tracking-error peak is not a limit cycle unless the controller can drive it.** Yaw's
+  2 Hz `FLTE` leaves a 34.5 Hz gyro line at 1e-5 of output: a disturbance, not a ceiling.
 - **AutoTune's overshoot and bounce criteria apply to its test gains, not the final
   loop.** The twitch flies I ≈ 0, FLTT 0, before the backoff; the log's step response is
   the final loop with I active, and AutoTune's own result reads `overshoot_ratio` 2.4 on

@@ -455,3 +455,25 @@ because yaw D is 0, so "P variance ≥ D variance" held with both effectively ze
 P + I/s + D·s through FLTD) × the line's amplitude, and below `osc_min_out_amp` reports it
 as a disturbance in the note, not a ceiling. The ringing and resonant simulated loops
 clear that floor by more than 20×.
+
+**Yaw has a reaction-torque zero; a 4-parameter fit hides it by pinning the lag.** Yaw
+torque is the rotors' drag torque (through the motor lag) plus the reaction torque of
+accelerating them, which is a derivative: a zero `(1 + tz s)`, phase *lead*. On every
+Brisket flight with yaw data the free fit `k e^{-sd}/((τ1 s+1)(τ2 s+1))` put `tau2` at its
+1 ms floor and the delay at 0 with an 11–13° phase residual, while roll and pitch on the
+same motors read 28–42 ms and 13–16 ms; forcing their lag in made it worse (23–27°). With
+the lag borrowed **and** a zero, four flights over two ESCs and two prop sets fit to
+2–3° with tz 197–236 ms, and the yaw body is near an integrator (`τ1` runs to its 5 s
+ceiling; only k/τ1 ≈ 1140–1290 deg/s² per unit output is identified). The consequence
+that matters: the free fit read the gain margin at ~21 Hz (40+ dB); the grey-box reads it
+at ~8 Hz, 18.8 dB at P 0.18, just above a 7 Hz band. The extrapolation gate's withhold was
+right. A simulated yaw with a 0.2 s zero reproduces the signature exactly (free fit tau2
+1 ms, 12.3°; grey-box tz 194 ms, k/τ1 within 5 %). Two companions:
+- **Borrow the lag per log, never pooled.** A yaw-only flight's roll/pitch fits pin too
+  (no stick there); pooling them with another flight's clean fits ruined both, and pooling
+  that flight's yaw moved the crossover below the band. `--lag-from` lends the lag only.
+- **Stick yaw stops near 3 Hz because of `ATC_ACCEL_Y_MAX`, not the pilot.** 270 deg/s²
+  turns a stick step into a 0.7 s ramp; one yaw-only flight at 600 deg/s² took the coherent
+  band from 0.5–3.5 Hz to 0.5–7 Hz. It shapes the target only (`attitude_command_model`),
+  the rate PID never reads it and the heading-hold correction is capped at 120 deg/s² at
+  either value (ArduPilot master, `AC_AttitudeControl.cpp`, checked 2026-11-05).

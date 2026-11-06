@@ -242,3 +242,109 @@ Only after A–C produce a yaw recommendation the robust check accepts:
   calling it the plan. State predictions *before* the flight.
 - All work since 2026-09-17 on `alog tune` is **uncommitted** on `main`. Don't commit
   unless the user asks.
+
+---
+
+## 8. Findings — amended 2026-11-05
+
+The sections above are kept as written on 2026-10-01. Read this one first.
+
+### What changed under the plan
+
+- **The hardware.** Master Airscrew 3MR 10x5x3 props from 2026-10-06; FETtec SFOC 4in1 ESC from
+  2026-10-19. §3's yaw plants (t2, t4, t5) and the borrowed lag (39–42 ms / 13–14 ms) are the old
+  ESC and props. Clean FETtec roll/pitch fits: `tau2` 18.6–33.6 ms, delay 13.6–21.8 ms, total
+  `tau2 + delay` 40–49 ms (brisket-f1..f4).
+- **Roll/pitch are not at 45° on the FETtec** (brisket-f1: PM ~39°, GM 4.8 dB, same gains). A roll
+  set P/I 0.125, D 0.0027 waits for validation. The user chose to do yaw first, on the current
+  roll/pitch gains.
+- **The repo.** The operating guide moved from CLAUDE.md to `GUIDE.md` (§2.2, §8, §9, §10 there;
+  there is no §12); the suites are `python tests/run_all.py` (16 files) and
+  `python tools/ci_local.py`; the work above was committed and released (2.1.0). Logs are named
+  by label only (`tests/logmap.local.json`): §4 A step 2's "15-32, 18-50, 12-42" are t2, t4, t5.
+  `LOG_DIR_LARGE` moved off Drive.
+
+### A false limit cycle (fixed first)
+
+On brisket-f3 and f5 a 10–12 dB line at 34.5 Hz in the yaw tracking error read as a limit cycle and
+cut yaw P 0.18 → 0.072 at confidence 0.70, the opposite direction to this plan. Its output
+amplitude through `|C|` (FLTE 2 Hz: −25 dB) is 1.1e-5, ~45× below one DShot step. `oscillation()`
+now requires `|C(f)|` × the line ≥ `osc_min_out_amp` (5e-4); below it the note calls it a
+disturbance. Commit 7f69ce8.
+
+### D — the confined-area flight (done: brisket-y1)
+
+D step 1 confirmed: in Loiter/AltHold the yaw rate target is shaped by `ATC_ACCEL_Y_MAX` in
+`attitude_command_model` (`input_euler_angle_roll_pitch_euler_rate_yaw_rad`, ArduPilot master
+`AC_AttitudeControl.cpp`); `PILOT_Y_RATE_TC` 0 adds no jerk limit; the heading-hold correction is
+`sqrt_controller(..., constrain(ACC_Y/2, 10, 120) deg/s²)` — 120 at both 270 and 600; the rate
+controller (`rate_controller_run_dt`, `AC_AttitudeControl_Multi.cpp`) never reads it. The logs
+agree: |dTar/dt| never exceeds ~2 × 270 deg/s², and a 200 deg/s stick step is a 0.7 s ramp.
+
+brisket-y1: `ATC_ACCEL_Y_MAX` 27000 → 60000 for one flight, yaw-only Loiter (30 s hover, 10
+pulses, 10 doublets, 6 × 5 s wiggles, 15 s hover), pack 32.6 V at take-off. Predicted coherent band
+5–6 Hz; measured **0.5–7.0 Hz**, mean coherence 0.85 (every FETtec flight before it:
+`NO_COHERENCE` on yaw, band 0.5–2.5 Hz). Roll/pitch on that flight were unexcited: their fits pin.
+
+### A — the grey-box yaw plant (built, accepted)
+
+The reaction-torque hypothesis holds. With `tau2`/delay borrowed from roll/pitch and a zero
+`(1 + tz s)`, all four flights with yaw data fit to the plan's ≤ 5° target:
+
+| flight | ESC / props | free fit | lag borrowed, no zero | grey-box | tz |
+|---|---|---|---|---|---:|
+| t2 | old | 1.60 dB / 13.1° | 0.89 dB / 24.7° | 0.77 dB / 2.0° | 214 ms |
+| t4 | old | 1.68 / 13.1° | 0.46 / 22.9° | 0.92 / 3.0° | 236 ms |
+| t5 | old | 2.13 / 12.0° | 0.75 / 27.3° | 0.84 / 3.4° | 219 ms |
+| y1 | FETtec | 2.12 / 11.4° | 1.12 / 25.6° | 0.70 / 2.5° | 197 ms |
+
+(scratch fits with fixed `tau1` free; the tool's numbers for t2 and y1 are pinned in
+`tests/test_toolkit.py`.) `tz` spans 197–236 ms (≤ 15 % of its mean) across two ESCs and two prop
+sets. `tau1` runs to its 5 s ceiling on the old flights: the yaw body is near an integrator and
+only k/τ1 (1140–1290 deg/s² per unit output) is identified — the same convention `pinned_params`
+already applies to `tau1`. With every parameter free on y1, the grey-box puts the lag at 37.5 ms
+/ 10.2 ms, close to roll/pitch; without the zero the free fit drives it to 1 ms / 0.
+
+The consequence: the free fit read the gain margin at ~21 Hz (40+ dB); the grey-box at ~8 Hz,
+**18.8 dB at P 0.18**. The extrapolation gate's withhold was right, and the old P 0.48–0.53 was
+far beyond what this plant supports.
+
+Code: `tunesim.Plant(tz=)`; `PlantModel.tz/model/lag/free_fit/corners/notes`;
+`tune_ident.fit_greybox`, `sibling_lag`, `_maybe_greybox` (accept: phase ≤ 5°, magnitude no
+worse than the free fit, `tz` off its bounds). Siblings are fitted **per log**, never pooled —
+pooling y1 with f4 pinned f4's clean fits, and pooling y1's yaw with other flights moved its
+crossover below the band. `alog tune --lag-from LOG ...` lends a lag from other flights and
+nothing else.
+
+### C — robust margins (built)
+
+`tune_ident.robust_margins` evaluates the 3 × 3 corners of `tau2` × delay (siblings' min × 0.8 to
+max × 1.2), refitting k, τ1, tz at each. A grey-box rate set passes only if every corner keeps
+45° / 6 dB; then the gain margin above the band counts as measured. Margin ceilings use every
+corner (`margin-45deg-6dB-robust`); margins are graded on the worst corner. Confidence: tier B's
+consistency × `1 − half-width / nominal` of the siblings' total lag ±20 % (0.70 on y1; the
+`tau2` × delay box itself is wider because the fits trade one for the other). B (motor lag from
+ESC RPM) is **not done**.
+
+### The recommendation (not yet flown)
+
+`alog tune brisket-y1.bin --axes yaw --lag-from brisket-f1..f4.bin`:
+
+- yaw **P 0.308, I 0.0308, FLTE 1.33**, confidence 0.46 ("validate before applying");
+- the set as applied: PM 84.4°, GM 16.7 dB nominal; worst corner PM 80.5°, GM 12.2 dB
+  (tau2 40.3 ms / delay 26.1 ms);
+- robust P ceiling 0.473 at the current FLTE.
+
+Before the tool did this, a hand analysis proposed P 0.30, I 0.030 **keeping FLTE 2**: crossover
+2.05 Hz, PM 84° (worst 77°), GM 14.2 dB (worst 11.7) at ~8 Hz. Either is a partway step (§4 E1)
+with the crossover inside the 7 Hz band, so the flight measures its phase margin directly. Fly it
+with `ATC_ACCEL_Y_MAX` 60000 again so the excitation matches y1, full pack, same card.
+
+### Still open
+
+1. Fly the P ~0.30 validation and compare measured in-band PM with the prediction.
+2. B: motor lag from ESC RPM (51 Hz telemetry on the FETtec), the independent check on the
+   borrowed lag. Telemetry latency will contaminate the delay; `tau2` is the usable part.
+3. The roll set P/I 0.125, D 0.0027 on the FETtec (roll/pitch margins ~39°).
+4. Whether to keep `ATC_ACCEL_Y_MAX` 60000: the virtual AutoTune puts yaw ACC at 610–810 deg/s².
+5. The angle-loop gap (§4 E5) is unchanged.

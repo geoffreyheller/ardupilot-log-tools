@@ -431,6 +431,149 @@ def test_pooling_two_logs_of_one_plant():
         ti.identify([])
 
 
+# ------------------------------------------------- grey-box yaw (yaw-tuning-plan workstreams A, C)
+
+GB_TAU2, GB_DELAY, GB_TZ = 0.030, 0.012, 0.2
+GB_YAW = tunesim.Plant(k=2400.0, tau1=2.0, tau2=GB_TAU2, delay=GB_DELAY, tz=GB_TZ)
+
+
+def _greybox_signals():
+    """Signals of a 10-inch-like aircraft whose yaw has a reaction-torque zero and whose
+    three axes share one motor lag: {axis: [AxisSignals]}, built once."""
+    if "greybox" not in _CACHE:
+        from tunesynth import GAINS_10IN
+        plants = dict(roll=tunesim.Plant(k=6000.0, tau1=0.30, tau2=GB_TAU2, delay=GB_DELAY),
+                      pitch=tunesim.Plant(k=5000.0, tau1=0.30, tau2=GB_TAU2, delay=GB_DELAY), yaw=GB_YAW)
+        w = fast_log(plants, GAINS_10IN, seconds=90.0, seed=3)
+        log = Log(w.write(os.path.join(TMP, "greybox.bin")), use_cache=False)
+        sigs, refusals = extract_axes(log, airborne_window(log))
+        assert sigs and not refusals, [r.line() for r in refusals]
+        _CACHE["greybox"] = {a: [s for s in sigs if s.axis == a] for a in ("roll", "pitch", "yaw")}
+    return _CACHE["greybox"]
+
+
+def _greybox_plants():
+    if "greybox:plants" not in _CACHE:
+        sg = _greybox_signals()
+        sib = {a: ti.identify(sg[a]) for a in ("roll", "pitch")}
+        lag = ti.sibling_lag(sib)
+        _CACHE["greybox:plants"] = (sib, lag, ti.identify(sg["yaw"]), ti.identify(sg["yaw"], lag=lag))
+    return _CACHE["greybox:plants"]
+
+
+def test_model_response_carries_the_reaction_torque_zero():
+    f = np.array([0.5, 2.0, 7.0])
+    s = 2j * math.pi * f
+    base = ti.model_response(1000.0, 1.0, 0.03, 0.01, f, 400.0)
+    with_z = ti.model_response(1000.0, 1.0, 0.03, 0.01, f, 400.0, tz=0.2)
+    assert np.allclose(with_z, base * (1 + 0.2 * s))
+    pm = ti.model_from_params(1000.0, 1.0, 0.03, 0.01)
+    assert pm.tz == 0.0 and pm.model == "free" and pm.corners == [] and pm.notes == []
+    assert np.allclose(ti.plant_response(pm, f, 400.0), base)
+    # the simulator and the identification model agree on the zero
+    assert np.allclose(GB_YAW.freq_response(f), ti.model_response(2400.0, 2.0, GB_TAU2, GB_DELAY, f, tz=GB_TZ))
+
+
+def test_a_yaw_zero_pins_the_free_fit_and_the_greybox_recovers_it():
+    """The real-log signature on a known plant: yaw with a reaction-torque zero, free fit
+    driven to tau2 at its 1 ms floor with a ~12 deg phase residual (Brisket: 11-13 deg).
+    With the lag borrowed from roll/pitch the grey-box form recovers tz and the
+    identifiable k/tau1 (the body is near an integrator; tau1 alone is not identified)."""
+    sib, lag, free, gb = _greybox_plants()
+    for a in ("roll", "pitch"):                          # the siblings measure the shared lag
+        assert sib[a].tau2 == pytest.approx(GB_TAU2, rel=0.05) and sib[a].delay == pytest.approx(GB_DELAY, rel=0.1)
+    assert lag["tau2"] == pytest.approx(GB_TAU2, rel=0.05) and set(lag["sources"]) == {"roll", "pitch"}
+    frac = ti.IDENT_CONSTANTS["greybox_lag_range_frac"]["value"]
+    assert lag["tau2_range"][0] == pytest.approx(min(p.tau2 for p in sib.values()) * (1 - frac))
+    assert lag["total"] == pytest.approx(np.mean([p.tau2 + p.delay for p in sib.values()]))
+    assert free.model == "free" and ti.pinned_params(free) and free.fit_rms_deg > 8.0
+    assert gb.model == "greybox" and gb.free_fit["fit_rms_deg"] == pytest.approx(free.fit_rms_deg)
+    assert gb.fit_rms_deg < ti.IDENT_CONSTANTS["greybox_max_phase_deg"]["value"] and gb.fit_rms_db < free.fit_rms_db
+    assert gb.tz == pytest.approx(GB_TZ, rel=0.10)
+    assert gb.k / gb.tau1 == pytest.approx(GB_YAW.k / GB_YAW.tau1, rel=0.10)
+    assert gb.tau2 == lag["tau2"] and gb.delay == lag["delay"] and gb.lag == lag
+    assert len(gb.corners) == 9 and all(c["rms_deg"] < 10.0 for c in gb.corners)
+    assert gb.notes and gb.notes[0].startswith("grey-box accepted") and "borrowed from pitch/roll" in gb.notes[0]
+    # roll and pitch never take the grey-box form, and without a lag nothing is tried
+    assert ti.identify(_greybox_signals()["roll"], lag=lag).model == "free"
+    assert free.notes and free.notes[0].startswith("grey-box not tried")
+    lines = ti.describe(gb)
+    assert lines[0].startswith("plant fit (grey-box)") and "tz = " in lines[0] and "borrowed" in lines[0]
+    rows = dict((r[0], r) for r in ti.plant_rows(gb)[1])
+    assert "tz" in rows and "lag range (robust)" in rows and rows["tau2"][3].startswith("borrowed from")
+
+
+def test_greybox_is_rejected_when_the_borrowed_lag_is_wrong():
+    """A lag that does not belong to this aircraft cannot buy a good fit: the grey-box is
+    rejected with the reason and the free fit stands."""
+    _sib, lag, free, _gb = _greybox_plants()
+    wrong = dict(lag, tau2=0.12, delay=0.045)
+    pm = ti.identify(_greybox_signals()["yaw"], lag=wrong)
+    assert pm.model == "free" and pm.k == pytest.approx(free.k)
+    assert pm.notes[0].startswith("grey-box rejected") and "phase residual" in pm.notes[0]
+
+
+def test_sibling_lag_uses_only_measured_free_fits():
+    sib, lag, _free, gb = _greybox_plants()
+    assert ti.sibling_lag({}) is None and ti.sibling_lag(None) is None
+    pinned = ti.model_from_params(1000.0, 0.3, 0.001, 0.02)           # tau2 at its floor: not measured
+    assert ti.pinned_params(pinned)
+    assert ti.sibling_lag({"roll x": pinned}) is None
+    assert ti.sibling_lag({"yaw": gb}) is None                        # a grey-box lag is itself borrowed
+    assert set(ti.sibling_lag(dict(sib, yaw=gb, bad=pinned))["sources"]) == {"roll", "pitch"}
+
+
+def test_robust_margins_cover_every_corner_and_bound_the_ceilings():
+    """Workstream C: the worst corner is no better than the nominal fit, `ok` is the
+    conjunction, and a grey-box margin ceiling keeps the limits on every corner - so it
+    is no higher than the same scan on the nominal plant alone."""
+    import dataclasses
+    _sib, lag, free, gb = _greybox_plants()
+    g = _greybox_signals()["yaw"][-1].gains
+    assert ti.robust_margins(free, g) is None
+    r = ti.robust_margins(gb, g)
+    m = ti.margins(gb, g)
+    assert r["n"] == 9 and len(r["per_corner"]) == 9 and r["ok"] is all(c["meets"] for c in r["per_corner"])
+    assert r["worst_gm_db"] <= m["gm_db"] + 1e-9 and r["worst_pm_deg"] <= m["pm_deg"] + 1e-9
+    assert r["binding"].startswith("tau2 ") and r["binding_corner"] in r["per_corner"]
+    cs, _notes = ti.margin_ceilings(gb, g)
+    p = [c for c in cs if c.param.endswith("_P")][0]
+    assert p.method.endswith("-robust") and p.evidence["robust"]["n"] == 9
+    nominal_only = dataclasses.replace(gb, corners=[])
+    p0s = [c.value for c in ti.margin_ceilings(nominal_only, g)[0] if c.param.endswith("_P")]
+    span_hi = ti.IDENT_CONSTANTS["margin_ceiling_span"]["value"][1] * g.rat_p
+    assert p.value <= (p0s[0] if p0s else span_hi) * (1 + 1e-6)          # none in the span: above its top
+    assert p.evidence["robust"]["worst_pm_deg"] == pytest.approx(45.0, abs=0.05)   # the binding corner sits on the limit
+    at = dataclasses.replace(g, rat_p=p.value, rat_i=p.value * g.rat_i / g.rat_p)
+    assert ti.robust_margins(gb, at)["ok"]
+    above = dataclasses.replace(g, rat_p=p.value * 1.05, rat_i=p.value * 1.05 * g.rat_i / g.rat_p)
+    assert not (ti.robust_margins(gb, above)["ok"] and ti.meets_margins(ti.margins(gb, above)))
+
+
+def test_extrapolated_accepts_a_greybox_gain_margin_only_with_a_passing_robust_check():
+    _sib, _lag, free, gb = _greybox_plants()
+    g = _greybox_signals()["yaw"][-1].gains
+    m = ti.margins(gb, g)
+    m_far = dict(m, f180_hz=gb.band[1] + 5.0)                        # a -180 deg point above the band
+    no = ti.extrapolated(gb, m_far)
+    assert len(no) == 1 and "borrowed from roll/pitch" in no[0] and "was not run" in no[0]
+    rob = ti.robust_margins(gb, g)
+    assert rob["ok"] and ti.extrapolated(gb, m_far, rob) == []
+    failing = dict(rob, ok=False)
+    assert "fails" in ti.extrapolated(gb, m_far, failing)[0]
+    # a crossover above the band is extrapolated whatever the robust check says
+    assert ti.extrapolated(gb, dict(m_far, fc_hz=gb.band[1] + 1.0), rob)[0].startswith("crossover")
+
+
+def test_virtual_autotune_runs_on_the_greybox_plant():
+    """The simulator plant built from a grey-box fit carries its zero (tz), so the
+    virtual AutoTune twitches the plant that was identified."""
+    _sib, _lag, _free, gb = _greybox_plants()
+    g = _greybox_signals()["yaw"][-1].gains
+    va = ti.virtual_autotune(gb, g, axis="yaw")
+    assert va["plant"]["tz"] == pytest.approx(gb.tz) and va["complete"], va.get("aborted")
+
+
 class _raises:
     def __init__(self, exc):
         self.exc = exc

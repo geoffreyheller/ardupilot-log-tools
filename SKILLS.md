@@ -274,6 +274,14 @@ the tuning flight, exactly as for batch logging (Skill 4).
   firmware defaults — one axis per flight. The sweep must pass the rate-loop crossover,
   which sat at 23 Hz on the simulated 5-inch plant: AnalyticTune's 0.05–5 Hz recipe is for
   the attitude loop and yields `NO_COHERENCE` on the rate loop by design.
+- **Yaw without a SysID sweep** (confined areas, wind): stick yaw reaches the rate loop
+  through `ATC_ACCEL_Y_MAX`, which turns a sharp stick into a ramp (270 deg/s² takes 0.7 s
+  to reach 200 deg/s), so stick-only flights stop being coherent near 3 Hz. Raise it for
+  one flight (Brisket: 27000 → 60000 cdeg/s², the 4.x spelling) — it shapes the target
+  only (`attitude_command_model`; the rate PID never reads it; the heading-hold correction
+  is capped at 120 deg/s² either way) — and fly yaw-only in Loiter: 30 s hover, 10 sharp
+  half-stick pulses, 10 doublets, six 5 s bursts of the fastest comfortable wiggle, 15 s
+  hover. Brisket's coherent yaw band went from 0.5–3.5 Hz to 0.5–7 Hz. Restore it after.
 - **A hover with no stick input is not a tuning log.** Coherence reads ~1.0 because the
   reference is the angle loop reacting to noise, and the plant estimate is biased toward
   −1/C. The tool refuses it on excitation (`NO_EXCITATION`), not on coherence.
@@ -286,6 +294,7 @@ alog tune before.bin after.bin              # several logs of one aircraft: plan
 alog tune flight.bin --axes roll,pitch      # a subset of axes
 alog tune flight.bin --aggr 0.075           # override the log's AUTOTUNE_AGGR for the virtual AutoTune (noted as override)
 alog tune flight.bin --prop-in 10 --json    # add the Mission Planner initial-parameter comparison (`calculator` table)
+alog tune yaw.bin --axes yaw --lag-from a.bin b.bin   # yaw grey-box: motor lag from other flights' roll/pitch, per log
 alog all  flight.bin                        # the same analysis as the `tune` section, after `gust`
 ```
 
@@ -359,6 +368,19 @@ result named `refused` — never a pass — and the exit code is unaffected.
    A rate set is also `withheld` when its margins are **not measured**: the crossover lies
    above the coherent band, or the gain margin is read above it on a fit whose `tau2`/delay
    sit at their bounds. The note says which and asks for a SysID sweep on that axis.
+   **Yaw's way out is the grey-box plant.** A multirotor's yaw torque is the rotors' drag
+   torque plus the reaction torque of accelerating them, a derivative term: a zero
+   `(1 + tz s)` the free fit cannot represent, so it drives `tau2` and the delay to their
+   bounds (Brisket: 11–13° phase residual on four flights). When that happens and some
+   roll/pitch fit has a measured lag, yaw is refitted as `k (1 + tz s) e^{-sd} / ((τ1 s +
+   1)(τ2 s + 1))` with `τ2`/delay borrowed (2–3° on the same flights) — accepted only at
+   ≤ 5° phase residual, no worse in magnitude, `tz` off its bounds. Its margins are then
+   checked on **every corner** of the borrowed lag's range (`tau2` × delay, ±20 % around
+   the siblings' min/max, `k`/`τ1`/`tz` refitted at each): pass on all nine and the gain
+   margin counts as measured. The siblings are fitted **per log**, never pooled: a
+   yaw-only flight's own roll/pitch pin, so pass earlier flights of the same hardware with
+   `--lag-from` (they lend the lag and nothing else). The plant's notes say whether the
+   grey-box was accepted, rejected (and why) or not tried.
    `I` follows `P` by AutoTune's ratio (1.0 roll/pitch, 0.1 yaw) unless the log's own
    I/P was deliberately different, which is preserved and said. Yaw gets `P`, `I` and
    `FLTE` only (and `D` only when `AUTOTUNE_AXES` bit 8 was set).
@@ -367,12 +389,15 @@ result named `refused` — never a pass — and the exit code is unaffected.
    unsaturated fraction; *excitation* is frames against 30 (tier C), coherence × band
    cover (tier B), or 1.0 / 0.3 for a complete / partial AutoTune axis (tier A);
    *consistency* is the per-frame step spread, the Bendat–Piersol error of |G| at the
-   crossover, or 1 − session spread; *agreement* is 1 − |Δ|/max when another tier
+   crossover (times, on a grey-box plant, 1 − the half-width / nominal of the borrowed
+   total lag `τ2 + delay`, ±20 % around the sibling fits: ~0.7 when they agree), or 1 −
+   session spread; *agreement* is 1 − |Δ|/max when another tier
    proposed a value (floored at 0.5; `step-rules` never sets it). A low number is
    auditable from these five, and `--json` carries them under `components`.
 4. **`ceilings`** — `axis | param | ceiling | method | clips to | evidence`. Hard
    upper bounds, whatever the tier. `margin-45deg-6dB` is the largest P or D whose full
-   loop keeps the margins on the identified plant: a value above it is clipped *to* it. An
+   loop keeps the margins on the identified plant: a value above it is clipped *to* it
+   (`margin-45deg-6dB-robust` on a grey-box plant: on every corner too). An
    oscillation ceiling (SRate, limit cycle) is where the loop was seen to oscillate: a value
    above it is clipped to 0.4 × ceiling. The fused P/I/D set is then re-checked and withheld
    (`the rate set as applied ... below the limits`) if it fails. The heli AutoTune -161°/-251°
@@ -385,7 +410,8 @@ result named `refused` — never a pass — and the exit code is unaffected.
    coherent band and mean coherence, the Bendat–Piersol error at the crossover; then the
    open-loop crossover, phase margin and gain margin on the fit and measured in band.
    Results `<axis> gain margin` / `<axis> phase margin` are graded at 6 dB / 45°
-   (`tune_gain_margin_db`, `tune_phase_margin_deg`), or `SKIP ... not measured` when read
+   (`tune_gain_margin_db`, `tune_phase_margin_deg`) — a grey-box plant on its worst corner,
+   the summary naming it and the nominal value — or `SKIP ... not measured` when read
    outside the coherent band on an unidentified high-frequency lag, or when the plant fit
    residual is ≥ 3 dB (the in-band measured margin is still quoted; read that instead). A
    fit that fails the residual gate also sets no margin ceilings ("margin ceilings not

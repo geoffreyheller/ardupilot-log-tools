@@ -117,6 +117,52 @@ def test_plant_frequency_response_and_delay():
     assert y[-1] == pytest.approx(1000.0, rel=1e-2)
 
 
+def test_plant_reaction_torque_zero():
+    """`tz` adds the zero (1 + tz s) of a multirotor's yaw: rotor drag torque through the
+    motor lag plus the reaction torque of accelerating the rotors, a derivative term.
+    The discrete model matches the continuous response (sine drive), the DC gain is
+    still k, an impulse-like step shows the lead (a faster initial rise), and tz = 0
+    leaves the original two-pole model bit-identical."""
+    base = Plant(k=1200.0, tau1=0.6, tau2=0.03, delay=0.015)
+    z = Plant(k=1200.0, tau1=0.6, tau2=0.03, delay=0.015, tz=0.2)
+    assert z.tz == 0.2 and base.tz == 0.0 and z.params()["tz"] == 0.2 and z.copy().tz == 0.2
+    f = np.array([0.001, 1.0, 5.0])
+    s = 2j * math.pi * f
+    assert np.allclose(z.freq_response(f), base.freq_response(f) * (1 + 0.2 * s))
+    assert abs(z.freq_response([0.001])[0]) == pytest.approx(1200.0, rel=1e-4)
+    # tz = 0 keeps the original state-space path exactly
+    b0 = Plant(k=1200.0, tau1=0.6, tau2=0.03, delay=0.015, tz=0.0)
+    assert np.array_equal(b0.Ad, base.Ad) and np.array_equal(b0.Bd, base.Bd)
+    # steady state and the lead
+    z.reset(); base.reset()
+    yz = np.array([z.step(1.0) for _ in range(4000)])
+    yb = np.array([base.step(1.0) for _ in range(4000)])
+    assert yz[-1] == pytest.approx(1200.0, rel=1e-2)
+    assert yz[40] > 2.0 * yb[40] > 0.0                       # 0.1 s in: the zero leads
+    # the discrete model matches the continuous response at 3 Hz (sine drive, settled)
+    z.reset()
+    n, fq = 8000, 3.0
+    t = np.arange(n) / 400.0
+    u = np.sin(2 * math.pi * fq * t)
+    y = np.array([z.step(ui) for ui in u])
+    seg = slice(n // 2, n)
+    ref = np.exp(-2j * math.pi * fq * t[seg])
+    gain = 2 * np.mean(y[seg] * ref) / (2 * np.mean(u[seg] * ref))
+    zoh = (1 - np.exp(-2j * math.pi * fq / 400.0)) / (2j * math.pi * fq / 400.0)
+    # step(u) returns the state after applying u, so the series leads continuous x ZOH by
+    # one sample - the same +2.7 deg at 3 Hz the two-pole plant shows (measured)
+    expect = z.freq_response([fq])[0] * zoh * np.exp(-2j * math.pi * fq * (z.delay_s_effective - z.delay)) \
+        * np.exp(2j * math.pi * fq / 400.0)
+    assert abs(gain) == pytest.approx(abs(expect), rel=0.02)
+    assert np.degrees(np.angle(gain / expect)) == pytest.approx(0.0, abs=2.0)
+    for bad in (dict(tz=-0.1, tau2=0.03), dict(tz=0.1, tau2=0.0)):
+        try:
+            Plant(k=1.0, tau1=0.5, **bad)
+        except ValueError:
+            continue
+        raise AssertionError(f"Plant accepted {bad}")
+
+
 def test_sqrt_controller_and_slew_rate():
     from dflog.tunesim import sqrt_controller, SlewRate
     # linear inside a/p^2, sqrt outside, clamped to |e|/dt

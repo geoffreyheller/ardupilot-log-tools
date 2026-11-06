@@ -755,7 +755,14 @@ def cmd_tune(args):
     logs = [_load(p, args) for p in args.logs]
     windows = [_window(log, args, flight=flight) for log in logs]
     names = [os.path.basename(p) for p in args.logs]
-    analysis = tune_fuse.analyse(logs, windows, axes=axes, prop_in=args.prop_in, aggr=args.aggr, log_names=names)
+    lag_from = None
+    if getattr(args, "lag_from", None):
+        lag_from = []
+        for p in args.lag_from:
+            lg = _load(p, args)
+            lag_from.append((lg, _window(lg, args), os.path.basename(p)))
+    analysis = tune_fuse.analyse(logs, windows, axes=axes, prop_in=args.prop_in, aggr=args.aggr, log_names=names,
+                                 lag_from=lag_from)
     log_docs = [dict(d, integrity=log.diagnostics.to_dict()) for d, log in zip(analysis.logs, logs)]
     identity = dict(ok=analysis.identity_ok, reasons=list(analysis.identity_reasons))
 
@@ -787,7 +794,8 @@ def cmd_tune(args):
     print("# alog tune\n")
     print(f"{len(logs)} log(s) of one aircraft, fused into one recommendation per parameter. Axes: "
           f"{', '.join(axes)}" + (f"; AUTOTUNE_AGGR overridden to {args.aggr:g}" if args.aggr is not None else "")
-          + (f"; prop {args.prop_in:g} in" if args.prop_in is not None else "") + ".\n")
+          + (f"; prop {args.prop_in:g} in" if args.prop_in is not None else "")
+          + (f"; motor lag also measured on {', '.join(n for _l, _w, n in lag_from)}" if lag_from else "") + ".\n")
     for name, log, w in zip(names, logs, windows):
         print(f"**{name}**")
         print(_integrity_header(log))
@@ -1143,6 +1151,9 @@ def build_parser():
     q.add_argument("--prop-in", type=float, default=None, metavar="INCHES",
                    help="prop diameter in inches: adds the Mission Planner initial-parameter calculator as a "
                         "configured-vs-calculator table")
+    q.add_argument("--lag-from", nargs="+", default=None, metavar="LOG",
+                   help="logs of the same aircraft and hardware used ONLY to measure the roll/pitch motor lag, "
+                        "per log, for a grey-box yaw plant to borrow; nothing from them is pooled into the analysis")
     q.add_argument("--json", action="store_true", help=argparse.SUPPRESS)
     q = sub.add_parser("fft", help="local FFT (scipy) of a logged signal, peaks labelled in motor orders")
     q.add_argument("log")
