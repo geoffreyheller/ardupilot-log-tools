@@ -84,6 +84,13 @@ CONSTANTS = {
     "osc_prominence_db":     _c(10.0, _SRC_PLAN, "a PSD peak needs this prominence above the median floor to count"),
     "osc_attrib_band_frac":  _c(0.2, _SRC_PLAN, "P vs D attribution: band-passed variance within +-this x f_osc"),
     "osc_attrib_order":      _c(4, _SRC_PLAN, "Butterworth order of the attribution band-pass (sosfiltfilt)"),
+    "osc_min_out_amp":       _c(5e-4, "one DShot command step: 2000 throttle values (48-2047) span the motor output "
+                                      "range, so 1/2000 of it; measured case: Brisket yaw 2026-10-21 "
+                                      "(`alog docs pitfalls` (reference/pitfalls.md), PID tuning)",
+                                "a limit cycle must move the motors: the controller's output amplitude at f_osc "
+                                "(|C(f)| x the Act - Tar line) below this is a disturbance the gyro sees, not the loop ringing"),
+    "osc_line_halfwidth_bins": _c(2, _SRC_PLAN, "a line's power is summed over +-this many Welch bins (the Hann main lobe) "
+                                                "above the local median floor (+-osc_attrib_band_frac of f_osc)"),
     "zn_no_overshoot":       _c(dict(kp=0.2, ti=0.5, td=1.0 / 3.0), _SRC_ZN, "Kp = 0.2 Ku, Ti = 0.5 Tu, Td = Tu/3"),
     "zn_classic_pid":        _c(dict(kp=0.6, ti=0.5, td=0.125), _SRC_ZN, "Kp = 0.6 Ku, Ti = 0.5 Tu, Td = 0.125 Tu"),
 }
@@ -321,6 +328,45 @@ def _bandpass_var(x, fs, lo, hi, order):
     return float(np.var(_signal.sosfiltfilt(sos, x)))
 
 
+def _line_amp(f, p, f0):
+    """Peak amplitude of a spectral line at `f0` in a Welch PSD: its power summed over the
+    Hann main lobe (+-`osc_line_halfwidth_bins`) above the local floor, the median of the
+    PSD within +-`osc_attrib_band_frac` of `f0` outside that lobe. Local, as the peak's
+    prominence is: an error PSD is not flat over 3-40 Hz, and a band-wide median
+    understates a line sitting in a low stretch of it."""
+    f, p = np.asarray(f, dtype=float), np.asarray(p, dtype=float)
+    if len(f) < 2:
+        return float("nan")
+    df = float(f[1] - f[0])
+    k = int(_lc("osc_line_halfwidth_bins"))
+    frac = float(_lc("osc_attrib_band_frac"))
+    i0 = int(np.argmin(np.abs(f - f0)))
+    idx = np.arange(len(f))
+    near = (f >= f0 * (1.0 - frac)) & (f <= f0 * (1.0 + frac)) & (np.abs(idx - i0) > k) & np.isfinite(p)
+    if near.sum() < 2:
+        return float("nan")
+    floor = float(np.median(p[near]))
+    sl = slice(max(i0 - k, 0), i0 + k + 1)
+    power = float(np.sum(np.clip(p[sl] - floor, 0.0, None)) * df)
+    return math.sqrt(2.0 * power)
+
+
+def controller_gain(gains, f_hz):
+    """|C(j 2 pi f)| of the rate PID as AC_PID runs it, normalised output per rad/s of
+    error: the error through the FLTE first-order filter, then P + I/s + D s (D through
+    FLTD). A filter frequency of 0 is no filter. Continuous-time; at 400 Hz the discrete
+    filters differ by under 2 % below 40 Hz."""
+    s = 2j * math.pi * float(f_hz)
+
+    def lp(fc):
+        fc = float(fc or 0.0)
+        return 1.0 if fc <= 0 else 1.0 / (1.0 + s / (2.0 * math.pi * fc))
+
+    c = (float(gains.rat_p or 0.0) + float(gains.rat_i or 0.0) / s
+         + float(gains.rat_d or 0.0) * s * lp(getattr(gains, "fltd", 0.0)))
+    return float(abs(lp(getattr(gains, "flte", 0.0)) * c))
+
+
 def quiet_mask(t, tar, fs, delay_s, min_target_dps, lp_hz):
     """True where the sample is at least `delay_s` after the last commanded rate of
     `min_target_dps` or more (and no such sample precedes it): sticks centred long enough
@@ -381,7 +427,8 @@ def oscillation(sig):
                f_osc=None, period_s=None, prominence_db=None, peak_source=None, d_peak_agrees=None,
                srate_warn=warn, srate_source=T["tune_srate_osc"]["source"],
                at_ceiling=False, attribution=None, attribution_band_hz=None,
-               var_p_band=float("nan"), var_d_band=float("nan"), ceilings=[], note="")
+               var_p_band=float("nan"), var_d_band=float("nan"), out_amp=None, disturbance=None,
+               ceilings=[], note="")
     quiet = quiet_mask(sig.t, sig.tar, fs, delay, float(_tc("step_min_target_dps")), float(lo))
     out["srate_quiet_s"] = float(quiet.sum() / fs)
     if sig.srate is not None:
@@ -400,14 +447,28 @@ def oscillation(sig):
 
     err = np.asarray(sig.act, dtype=float) - np.asarray(sig.tar, dtype=float)
     sources = [("error", err)] + ([("d", sig.d)] if sig.d is not None else [])
+    spectra = {}
     for name, x in sources:
         x = np.asarray(x, dtype=float)
         if np.isfinite(x).sum() < 2 * nperseg or hi <= lo:
             out["peaks"][name] = None
             continue
-        pk, _spec = _best_peak(x, fs, lo, hi, nperseg, prom_db)
+        pk, spectra[name] = _best_peak(x, fs, lo, hi, nperseg, prom_db)
         out["peaks"][name] = pk
     best = out["peaks"].get("error")
+    if best is not None:
+        # a limit cycle must move the motors: the controller's output at the line,
+        # |C(f)| x the line's amplitude in Act - Tar (deg/s -> rad/s, AC_PID's unit)
+        f0 = float(best["freq_hz"])
+        err_amp = _line_amp(*spectra["error"], f0)
+        cg = controller_gain(sig.gains, f0)
+        out["out_amp"] = out_amp = float(cg * math.radians(err_amp)) if _fin(err_amp) else None
+        floor_amp = float(_lc("osc_min_out_amp"))
+        if out_amp is not None and out_amp < floor_amp:
+            out["disturbance"] = dict(freq_hz=f0, prominence_db=float(best["prominence_db"]), err_amp_dps=err_amp,
+                                      controller_gain=cg, out_amp=out_amp, out_amp_min=floor_amp,
+                                      source=CONSTANTS["osc_min_out_amp"]["source"])
+            best = None
     if best is not None:
         out.update(f_osc=float(best["freq_hz"]), period_s=1.0 / float(best["freq_hz"]),
                    prominence_db=float(best["prominence_db"]), peak_source="error")
@@ -434,9 +495,17 @@ def oscillation(sig):
                  f"(QUIK_OSC_SMAX {warn:g})" if _fin(out["srate_p95"]) else
                  f"SRate not evaluated ({out['srate_quiet_s']:.1f} s of samples {delay:g} s clear of stick input"
                  + ("" if sig.srate is not None else "; SRate not logged") + ")")
+    dist = out["disturbance"]
+    dist_txt = ("" if dist is None else
+                f"; the {dist['prominence_db']:.1f} dB peak at {dist['freq_hz']:.1f} Hz in Act - Tar is not a limit cycle: "
+                f"its {dist['err_amp_dps']:.3g} deg/s through |C| {dist['controller_gain']:.3g} is an output amplitude of "
+                f"{dist['out_amp']:.2g}, below one motor command step ({dist['out_amp_min']:g}) - a disturbance the "
+                f"gyro sees, not the loop ringing")
     if not out["at_ceiling"]:
-        out["note"] = (f"no ceiling found: {srate_txt}, Dmod min {_fmt(out['dmod_min'], 3)}, no Act - Tar PSD peak "
-                       f">= {prom_db:g} dB in {lo:g}-{hi:g} Hz (a fact about this flight, not a pass)")
+        out["note"] = (f"no ceiling found: {srate_txt}, Dmod min {_fmt(out['dmod_min'], 3)}, "
+                       + (f"no limit cycle in {lo:g}-{hi:g} Hz{dist_txt}" if dist is not None else
+                          f"no Act - Tar PSD peak >= {prom_db:g} dB in {lo:g}-{hi:g} Hz")
+                       + " (a fact about this flight, not a pass)")
         return out
 
     attr = out["attribution"] or "P"

@@ -443,3 +443,15 @@ reads `overshoot_ratio` 2.4 and `bounce_ratio` 1.9 — "fail" by a literal readi
 ratios are calibrated on a real fast-logged flight the `step-rules` confidence is capped
 at 0.39 (always withheld), the ratios are reported beside their thresholds but not graded,
 and the step rules never set another tier's agreement. Read them as direction only.
+
+**A line in `Act - Tar` is not a limit cycle unless the controller can drive it.** On
+Brisket's yaw (FETtec ESC, 2026-10-21 and 10-28) a 10–12 dB line at 34.5 Hz in the
+tracking error read as a limit cycle and cut `ATC_RAT_YAW_P` 0.18 → 0.072 at confidence
+0.70. The line was 0.06 deg/s; the yaw error filter (`FLTE` 2 Hz) passes −25 dB of it, so
+the controller's output there was 1.1e-5 — about 45× below one motor command step (DShot
+has 2000) — and the loop gain at 34.5 Hz about −50 dB. It was attributed to P only
+because yaw D is 0, so "P variance ≥ D variance" held with both effectively zero.
+`oscillation()` now converts the line to an output amplitude, `|C(f)|` (FLTE, then
+P + I/s + D·s through FLTD) × the line's amplitude, and below `osc_min_out_amp` reports it
+as a disturbance in the note, not a ceiling. The ringing and resonant simulated loops
+clear that floor by more than 20×.

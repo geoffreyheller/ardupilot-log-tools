@@ -274,6 +274,54 @@ def test_resonant_but_stable_loop_trips_the_psd_detector_only():
     assert [x["param"] for x in r] == ["ATC_RAT_RLL_P"] and r[0]["value"] == pytest.approx(0.4 * g["rat_p"], rel=1e-6)
 
 
+def test_a_peak_the_controller_cannot_drive_is_a_disturbance_not_a_limit_cycle():
+    """Brisket yaw (FETtec flights, 2026-10-21/28): a 12 dB line at 34.5 Hz in Act - Tar
+    read as a limit cycle and cut yaw P 0.18 -> 0.072. The controller's output at that
+    frequency was 1.3e-5 RMS - P 0.18 x the 2 Hz FLTE's -25 dB - about 40x below one motor
+    command step, so the loop cannot have been sustaining it. Here the calm loop gets a
+    2 deg/s line at 34.5 Hz added to the gyro (Act) only, with the P term and output
+    carrying what a 2 Hz error filter would pass: the PSD detector sees it, the gate
+    refuses it as a ceiling, and the ringing / resonant loops above still pass the gate."""
+    import copy
+    sig = _calm()
+    s = copy.copy(sig)
+    w = 2.0 * np.sin(2 * math.pi * 34.5 * np.asarray(sig.t))
+    u = sig.gains.rat_p * np.radians(w) / abs(1 + 1j * 34.5 / 2.0)
+    s.act, s.p, s.out = np.asarray(sig.act) + w, np.asarray(sig.p) + u, np.asarray(sig.out) + u
+    s.gains = sig.gains.__class__(**dict(vars(sig.gains), flte=2.0))
+    osc = tune_step.oscillation(s)
+    assert osc["peaks"]["error"] is not None
+    assert osc["peaks"]["error"]["freq_hz"] == pytest.approx(34.5, abs=0.5)        # the detector saw it
+    assert osc["at_ceiling"] is False and osc["ceilings"] == [] and osc["f_osc"] is None
+    dist = osc["disturbance"]
+    assert dist["freq_hz"] == pytest.approx(34.5, abs=0.5)
+    floor = tune_step.CONSTANTS["osc_min_out_amp"]["value"]
+    assert dist["out_amp"] < floor and dist["out_amp_min"] == floor
+    # the line's amplitude in Act - Tar is recovered from the PSD (2 deg/s injected)
+    assert dist["err_amp_dps"] == pytest.approx(2.0, rel=0.15)
+    # |C| at 34.5 Hz: AC_PID filters the error by FLTE before P, I and D; D then by FLTD
+    jw = 2j * math.pi * 34.5
+    g0 = sig.gains
+    c = (g0.rat_p + g0.rat_i / jw + g0.rat_d * jw / (1 + jw / (2 * math.pi * g0.fltd))) / (1 + jw / (2 * math.pi * 2.0))
+    assert dist["controller_gain"] == pytest.approx(abs(c), rel=1e-9)
+    assert dist["out_amp"] == pytest.approx(abs(c) * math.radians(dist["err_amp_dps"]), rel=1e-9)
+    assert osc["note"].startswith("no ceiling found")
+    assert "not a limit cycle" in osc["note"] and "34.5 Hz" in osc["note"] and "motor command step" in osc["note"]
+    assert tune_step.step_rules({}, osc, s.gains) == []
+    # the same line with no error filter is well above one step: a real candidate
+    s2 = copy.copy(s)
+    s2.gains = sig.gains
+    o2 = tune_step.oscillation(s2)
+    assert o2["at_ceiling"] is True and o2["f_osc"] == pytest.approx(34.5, abs=0.5) and o2["disturbance"] is None
+    assert o2["out_amp"] >= floor
+    # the genuine cases clear the gate by orders of magnitude
+    for name, mult in (("ring", RING_MULT), ("resonant", RESONANT_MULT)):
+        g = dict(_calm_gains())
+        g["rat_p"] *= mult
+        o = tune_step.oscillation(_signals(name, g, seconds=60.0)[0][0])
+        assert o["at_ceiling"] is True and o["disturbance"] is None and o["out_amp"] > 20 * floor, (name, o["out_amp"])
+
+
 def test_calm_log_has_no_ceiling_and_says_so_as_a_note():
     sig = _calm()
     osc = tune_step.oscillation(sig)

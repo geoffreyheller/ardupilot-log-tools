@@ -342,7 +342,9 @@ result named `refused` — never a pass — and the exit code is unaffected.
      hover throttle. Prior 0.8.
    - `ceiling` — a measured oscillation ceiling (`SRate` p95 above `QUIK_OSC_SMAX` 5, a
      limit cycle in the D term or the tracking error, or the heli −161°/−251° phase rule
-     on the plant) times QuickTune's 0.4 margin; also the method of any higher-tier value
+     on the plant) times QuickTune's 0.4 margin. A tracking-error line counts only when the
+     controller's output there (`|C(f)|` × the line) reaches one motor command step;
+     smaller, the note calls it a disturbance the gyro sees. Also the method of any higher-tier value
      that was clipped to a ceiling (the note says so). Prior 0.7.
    - `step-rules` — tier C: bounded ±25 % adjustments from the deconvolved step response.
      **Uncalibrated**: AutoTune's overshoot and bounce criteria are written for a twitch
